@@ -281,29 +281,36 @@ async function loadBVHFromURL(url, displayName){
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
 
-  // 盡可能取得來源 skeleton；最後用 bones 自組 Skeleton
-  let sourceSkeleton =
-      (bvhResult.skeleton && bvhResult.skeleton.bones?.length ? bvhResult.skeleton : null) ||
-      (bvhResult.skeletonHelper?.skeleton && bvhResult.skeletonHelper.skeleton.bones?.length ? bvhResult.skeletonHelper.skeleton : null);
+  // 1) 嘗試各種位置取到 bones 陣列
+  let bonesArray = null;
 
-  if (!sourceSkeleton && bvhResult.skeletonHelper?.bones?.length) {
-    sourceSkeleton = new THREE.Skeleton(bvhResult.skeletonHelper.bones);
-  }
-  if (!sourceSkeleton && bvhResult.restPose?.bones?.length) {
-    sourceSkeleton = new THREE.Skeleton(bvhResult.restPose.bones);
-  }
-
-  if (!sourceSkeleton || !sourceSkeleton.bones?.length) {
-    console.warn("BVH result keys:", Object.keys(bvhResult));
-    throw new Error("BVH 檔案沒有解析到 skeleton（或格式不相容）。");
+  if (bvhResult && bvhResult.skeleton && bvhResult.skeleton.bones && bvhResult.skeleton.bones.length) {
+    bonesArray = bvhResult.skeleton.bones;
+  } else if (bvhResult && bvhResult.skeletonHelper && bvhResult.skeletonHelper.skeleton && bvhResult.skeletonHelper.skeleton.bones && bvhResult.skeletonHelper.skeleton.bones.length) {
+    bonesArray = bvhResult.skeletonHelper.skeleton.bones;
+  } else if (bvhResult && bvhResult.skeletonHelper && bvhResult.skeletonHelper.bones && bvhResult.skeletonHelper.bones.length) {
+    bonesArray = bvhResult.skeletonHelper.bones;
+  } else if (bvhResult && bvhResult.bones && Array.isArray(bvhResult.bones) && bvhResult.bones.length) {
+    bonesArray = bvhResult.bones;
+  } else if (bvhResult && bvhResult.restPose && bvhResult.restPose.bones && bvhResult.restPose.bones.length) {
+    bonesArray = bvhResult.restPose.bones;
   }
 
-  // 取動畫並移除 root 位移（避免被拖著走）
-  let clip = bvhResult.clip?.clone?.() ?? bvhResult.clip;
+  if (!bonesArray) {
+    showError("BVH 檔案沒有解析到 skeleton。可用欄位："+JSON.stringify(Object.keys(bvhResult||{})));
+    throw new Error("BVH 無 bones");
+  }
+
+  // 2) 確保我們得到的是 THREE.Skeleton
+  let sourceSkeleton = (bvhResult.skeleton && bvhResult.skeleton.bones === bonesArray) ? bvhResult.skeleton : null;
+  if (!sourceSkeleton) sourceSkeleton = new THREE.Skeleton(bonesArray);
+
+  // 3) 取動畫並移除 root 位移
+  let clip = (bvhResult && bvhResult.clip && typeof bvhResult.clip.clone === 'function') ? bvhResult.clip.clone() : bvhResult.clip;
   if (!clip) throw new Error("BVH 檔案內沒有可用的動畫 clip。");
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position"));
 
-  // 重定向到你的角色骨架
+  // 4) 重定向到你的角色骨架
   const retargeted = SkeletonUtils.retargetClip(
     targetSkeleton,
     sourceSkeleton,
@@ -388,7 +395,7 @@ function animate(){
 function showError(msg){
   console.error(msg);
   setStatus("⚠️ " + msg);
-  errorToast.textContent = "⚠️ " + msg + "\n請按 F12 → Console 檢查詳細錯誤。";
+  errorToast.textContent = "⚠️ " + msg;
   errorToast.style.display = "block";
 }
 function showFatal(err){
