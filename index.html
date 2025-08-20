@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Mocap Demo｜多動作切換（BVH / GLB → 角色重定向）</title>
+<style>
+  :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
+  #app{position:fixed;inset:0}
+  #ui{
+    position:fixed;left:12px;top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+    padding:10px 12px;background:rgba(22,25,34,.9);backdrop-filter:blur(8px);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.35);max-width:min(96vw,1200px)
+  }
+  #ui .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  #ui label{font-size:12px;color:var(--muted)}
+  #ui input[type="file"], select, button, input[type="range"], input[type="checkbox"]{accent-color:var(--acc)}
+  select,button{background:#111523;border:1px solid #283044;color:var(--text);border-radius:10px;padding:8px 10px;font-size:14px}
+  button:hover{border-color:#3b4a6b;cursor:pointer}
+  #status{font-size:12px;color:var(--muted)}
+  #drop{position:fixed;inset:0;pointer-events:none;border:2px dashed transparent;border-radius:18px}
+  #drop.active{pointer-events:none;border-color:#3b82f6;box-shadow:0 0 0 999vmax rgba(59,130,246,.08) inset}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="ui">
+  <div class="row">
+    <button id="btnLoadModel">載入預設角色（./character.glb）</button>
+    <label>或上傳角色
+      <input id="charInput" type="file" accept=".glb,.gltf"/>
+    </label>
+    <span id="status">待命中…</span>
+  </div>
+  <div class="row" style="width:100%">
+    <label>上傳動作（.bvh 或 .glb）
+      <input id="motionInput" type="file" accept=".bvh,.glb,.gltf" multiple/>
+    </label>
+    <label>動作清單
+      <select id="motionSelect" style="min-width:260px">
+        <option disabled selected>（尚未載入動作）</option>
+      </select>
+    </label>
+    <button id="playBtn">播放</button>
+    <button id="pauseBtn">暫停</button>
+    <label>循環 <input id="loopChk" type="checkbox" checked/></label>
+    <label style="display:flex;align-items:center;gap:6px">速度
+      <input id="speed" type="range" min="0.1" max="2.0" step="0.05" value="1"/>
+    </label>
+  </div>
+</div>
+
+<div id="drop"></div>
+
+<script type="module">
+import * as THREE from "https://unpkg.com/three@0.168.0/build/three.module.js";
+import { OrbitControls } from "https://unpkg.com/three@0.168.0/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "https://unpkg.com/three@0.168.0/examples/jsm/loaders/GLTFLoader.js";
+import { BVHLoader } from "https://unpkg.com/three@0.168.0/examples/jsm/loaders/BVHLoader.js";
+import { SkeletonUtils } from "https://unpkg.com/three@0.168.0/examples/jsm/utils/SkeletonUtils.js";
+
+const app = document.getElementById("app");
+const statusEl = document.getElementById("status");
+const btnLoadModel = document.getElementById("btnLoadModel");
+const charInput = document.getElementById("charInput");
+const motionInput = document.getElementById("motionInput");
+const motionSelect = document.getElementById("motionSelect");
+const playBtn = document.getElementById("playBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+const loopChk = document.getElementById("loopChk");
+const speed = document.getElementById("speed");
+const drop = document.getElementById("drop");
+
+let renderer, scene, camera, controls, clock = new THREE.Clock();
+let model, targetSkeleton, mixer;
+const actions = new Map(); // name -> THREE.AnimationAction
+let currentAction = null;
+
+init();
+animate();
+
+function init(){
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  app.appendChild(renderer.domElement);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0f1115);
+
+  camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .1, 100);
+  camera.position.set(0,1.6,3);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0,1,0);
+  controls.update();
+
+  // Lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x202035, .9);
+  scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+  dir.position.set(3,5,2);
+  dir.castShadow = true;
+  dir.shadow.mapSize.set(2048,2048);
+  scene.add(dir);
+
+  // Floor
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(30,30),
+    new THREE.MeshStandardMaterial({color:0x171a24, roughness:1})
+  );
+  floor.rotation.x = -Math.PI/2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  // Events
+  window.addEventListener("resize", onResize);
+  btnLoadModel.addEventListener("click", ()=>loadCharacterFromURL("./character.glb"));
+  charInput.addEventListener("change", e=>{
+    const f = e.target.files?.[0]; if(!f) return;
+    loadCharacterFromFile(f);
+  });
+  motionInput.addEventListener("change", e=>{
+    if(!ensureModel()) return;
+    const files = [...(e.target.files||[])];
+    loadMultipleMotions(files);
+  });
+  motionSelect.addEventListener("change", ()=>{
+    const name = motionSelect.value;
+    switchToAction(name, 0.35);
+  });
+  playBtn.addEventListener("click", ()=>{ currentAction?.play(); currentAction && (currentAction.paused=false); setStatus("播放"); });
+  pauseBtn.addEventListener("click", ()=>{ if(currentAction){ currentAction.paused = true; setStatus("暫停"); }});
+  speed.addEventListener("input", ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
+  loopChk.addEventListener("change", ()=>{
+    for(const a of actions.values()){
+      a.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+      a.clampWhenFinished = !loopChk.checked;
+    }
+  });
+
+  // Drag & Drop for motions
+  window.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("active"); });
+  window.addEventListener("dragleave", e=>{ drop.classList.remove("active"); });
+  window.addEventListener("drop", e=>{
+    e.preventDefault(); drop.classList.remove("active");
+    if(!ensureModel()) return;
+    const files = [...(e.dataTransfer?.files||[])];
+    if(files.length) loadMultipleMotions(files);
+  });
+
+  setStatus("請先載入角色（按鈕或上傳 GLB）");
+}
+
+function onResize(){
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+
+async function loadCharacterFromURL(url){
+  try{
+    setStatus("載入角色中…");
+    const gltf = await new GLTFLoader().loadAsync(url);
+    useLoadedCharacter(gltf.scene);
+  }catch(err){ setStatus("載入角色失敗："+err.message); console.error(err); }
+}
+
+async function loadCharacterFromFile(file){
+  try{
+    setStatus("解析角色檔…");
+    const url = URL.createObjectURL(file);
+    const gltf = await new GLTFLoader().loadAsync(url);
+    URL.revokeObjectURL(url);
+    useLoadedCharacter(gltf.scene);
+  }catch(err){ setStatus("上傳角色失敗："+err.message); console.error(err); }
+}
+
+function useLoadedCharacter(sceneObj){
+  // 清掉舊模型與動畫
+  if(model){ scene.remove(model); mixer?.stopAllAction(); for(const a of actions.values()) a.stop(); actions.clear(); updateMotionSelect(); currentAction=null; targetSkeleton=null; }
+  model = sceneObj;
+  model.traverse(o=>{
+    if(o.isSkinnedMesh){ o.castShadow = true; o.frustumCulled = false; targetSkeleton ??= o.skeleton; }
+  });
+  if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
+  model.position.set(0,0,0);
+  scene.add(model);
+
+  mixer = new THREE.AnimationMixer(model);
+  mixer.timeScale = Number(speed.value);
+
+  setStatus("角色 OK：上傳 .bvh 或含動畫的 .glb");
+}
+
+function ensureModel(){
+  if(!model){ setStatus("請先載入角色"); return false; }
+  return true;
+}
+
+async function loadMultipleMotions(files){
+  const bvhFiles = files.filter(f=>f.name.toLowerCase().endsWith(".bvh"));
+  const glbFiles = files.filter(f=>/\.(glb|gltf)$/i.test(f.name));
+  if(bvhFiles.length){ setStatus(`載入 ${bvhFiles.length} 支 BVH…`); for(const f of bvhFiles){ await loadBVH(f).catch(err=>console.error(err)); } }
+  if(glbFiles.length){ setStatus(`載入 ${glbFiles.length} 個 GLB 動作來源…`); for(const f of glbFiles){ await loadMotionGLB(f).catch(err=>console.error(err)); } }
+  setStatus(`已載入 ${actions.size} 支動作`);
+  // 自動播放第一支
+  if(actions.size && !currentAction){
+    const first = actions.keys().next().value;
+    motionSelect.value = first;
+    switchToAction(first, 0.0);
+  }
+}
+
+async function loadBVH(file){
+  const url = URL.createObjectURL(file);
+  const loader = new BVHLoader();
+  const res = await loader.loadAsync(url);
+  URL.revokeObjectURL(url);
+
+  const sourceSkel = res.skeleton;
+  let clip = res.clip.clone();
+  // 移除 position 軌，避免 root-motion 把人拖著走
+  clip.tracks = clip.tracks.filter(t=>!t.name.endsWith(".position"));
+
+  // 重定向到目標骨架
+  const retargeted = SkeletonUtils.retargetClip(
+    targetSkeleton,
+    sourceSkel,
+    clip,
+    { preserveHipPosition:true, useTargetMatrix:true }
+  );
+  addAction(retargeted, file.name.replace(/\.(bvh)$/i,""));
+}
+
+async function loadMotionGLB(file){
+  // 將「含動畫的 GLB（也含一套骨架）」的每個 clip 重定向到目標骨架
+  const url = URL.createObjectURL(file);
+  const gltf = await new GLTFLoader().loadAsync(url);
+  URL.revokeObjectURL(url);
+
+  // 找 source skeleton
+  let sourceSkeleton = null;
+  gltf.scene.traverse(o=>{ if(o.isSkinnedMesh && !sourceSkeleton){ sourceSkeleton = o.skeleton; }});
+  if(!sourceSkeleton || !gltf.animations?.length){
+    setStatus(`GLB 無可用骨架/動畫：${file.name}`); return;
+  }
+
+  gltf.animations.forEach((clip, idx)=>{
+    const clean = clip.clone();
+    clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
+    const retargeted = SkeletonUtils.retargetClip(
+      targetSkeleton,
+      sourceSkeleton,
+      clean,
+      { preserveHipPosition:true, useTargetMatrix:true }
+    );
+    const name = `${file.name.replace(/\.(gltf|glb)$/i,"")} / ${clip.name||("Clip"+idx)}`;
+    addAction(retargeted, name);
+  });
+}
+
+function addAction(clip, name){
+  const action = mixer.clipAction(clip);
+  action.enabled = true;
+  action.setLoop(loopChk.checked?THREE.LoopRepeat:THREE.LoopOnce, Infinity);
+  action.clampWhenFinished = !loopChk.checked;
+  action.time = 0;
+  action.paused = false;
+
+  actions.set(name, action);
+  updateMotionSelect();
+}
+
+function updateMotionSelect(){
+  motionSelect.innerHTML = "";
+  if(!actions.size){
+    const opt = document.createElement("option");
+    opt.disabled = true; opt.selected = true; opt.textContent="（尚未載入動作）";
+    motionSelect.appendChild(opt);
+    return;
+  }
+  for(const name of actions.keys()){
+    const opt = document.createElement("option");
+    opt.value = name; opt.textContent = name;
+    motionSelect.appendChild(opt);
+  }
+}
+
+function switchToAction(name, fade=0.35){
+  const next = actions.get(name);
+  if(!next){ setStatus("找不到動作："+name); return; }
+  if(currentAction && currentAction !== next){
+    currentAction.crossFadeTo(next.reset().play(), fade, true);
+  }else{
+    next.reset().play();
+  }
+  currentAction = next;
+  setStatus(`播放：${name}`);
+}
+
+function setStatus(msg){ statusEl.textContent = msg; }
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  mixer?.update(dt);
+  renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
