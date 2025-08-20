@@ -66,7 +66,10 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- ★★★ 這段 import map 是關鍵：把 'three' 與範例外掛的路徑映射到 CDN ★★★ -->
+<!-- ✅ 先載入 es-module-shims：讓舊版瀏覽器也支援 import map / 裸匯入 -->
+<script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1/dist/es-module-shims.min.js"></script>
+
+<!-- ✅ import map：把 'three' 與範例外掛映射到 CDN -->
 <script type="importmap">
 {
   "imports": {
@@ -78,14 +81,12 @@
 </script>
 
 <script type="module">
-/* ======= 模組載入（用 import map 的裸匯入） ======= */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
 import { SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
-/* ======= DOM ======= */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -99,10 +100,9 @@ const speed = document.getElementById("speed");
 const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 
-/* ======= 全域狀態 ======= */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, mixer;
-const actions = new Map(); // name -> THREE.AnimationAction
+const actions = new Map();
 let currentAction = null;
 
 init().catch(showFatal);
@@ -281,7 +281,7 @@ function addRetargetedClip(bvhResult, name){
   if(!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
   const sourceSkel = bvhResult.skeleton;
   let clip = bvhResult.clip.clone();
-  clip.tracks = clip.tracks.filter(t=>!t.name.endsWith(".position")); // 去 root 位移
+  clip.tracks = clip.tracks.filter(t=>!t.name.endsWith(".position"));
   const retargeted = SkeletonUtils.retargetClip(
     targetSkeleton, sourceSkel, clip,
     { preserveHipPosition:true, useTargetMatrix:true }
@@ -359,7 +359,6 @@ function animate(){
   renderer.render(scene, camera);
 }
 
-/* ======= 簡易錯誤顯示 ======= */
 function showError(msg){
   console.error(msg);
   setStatus("⚠️ " + msg);
