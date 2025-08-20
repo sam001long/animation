@@ -10,7 +10,7 @@
   #app{position:fixed;inset:0}
   #ui{
     position:fixed;left:12px;top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
-    padding:10px 12px;background:rgba(22,25,34,.9);backdrop-filter:blur(8px);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.35);max-width:min(96vw,1200px)
+    padding:10px 12px;background:rgba(22,25,34,.9);backdrop-filter:blur(8px);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.35);max-width:min(96vw,1200px);z-index:10
   }
   #ui .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   #ui label{font-size:12px;color:var(--muted)}
@@ -20,6 +20,11 @@
   #status{font-size:12px;color:var(--muted)}
   #drop{position:fixed;inset:0;pointer-events:none;border:2px dashed transparent;border-radius:18px}
   #drop.active{pointer-events:none;border-color:#3b82f6;box-shadow:0 0 0 999vmax rgba(59,130,246,.08) inset}
+  #errorToast{
+    position:fixed;right:12px;bottom:12px;max-width:min(96vw,560px);
+    padding:10px 12px;background:#301b1b;color:#ffd7d7;border:1px solid #5f2c2c;border-radius:12px;display:none;white-space:pre-wrap;line-height:1.4
+  }
+  .badge{padding:2px 8px;border-radius:999px;background:#23283a;color:#b8c1ff;font-size:12px}
 </style>
 </head>
 <body>
@@ -27,16 +32,23 @@
 
 <div id="ui">
   <div class="row">
+    <span class="badge">Step 1</span>
     <button id="btnLoadModel">載入預設角色（./character.glb）</button>
     <label>或上傳角色
       <input id="charInput" type="file" accept=".glb,.gltf"/>
     </label>
-    <span id="status">待命中…</span>
+    <span id="status">初始化中…</span>
   </div>
+
   <div class="row" style="width:100%">
+    <span class="badge">Step 2</span>
     <label>上傳動作（.bvh 或 .glb）
       <input id="motionInput" type="file" accept=".bvh,.glb,.gltf" multiple/>
     </label>
+    <button id="btnLoadSamples">一鍵載入示範動作（Walk/Run/Jump）</button>
+  </div>
+
+  <div class="row" style="width:100%">
     <label>動作清單
       <select id="motionSelect" style="min-width:260px">
         <option disabled selected>（尚未載入動作）</option>
@@ -52,14 +64,17 @@
 </div>
 
 <div id="drop"></div>
+<div id="errorToast"></div>
 
 <script type="module">
-import * as THREE from "https://unpkg.com/three@0.168.0/build/three.module.js";
-import { OrbitControls } from "https://unpkg.com/three@0.168.0/examples/jsm/controls/OrbitControls.js";
-import { GLTFLoader } from "https://unpkg.com/three@0.168.0/examples/jsm/loaders/GLTFLoader.js";
-import { BVHLoader } from "https://unpkg.com/three@0.168.0/examples/jsm/loaders/BVHLoader.js";
-import { SkeletonUtils } from "https://unpkg.com/three@0.168.0/examples/jsm/utils/SkeletonUtils.js";
+/* ======= 模組載入（使用 jsDelivr） ======= */
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js";
+import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/GLTFLoader.js";
+import { BVHLoader } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/BVHLoader.js";
+import { SkeletonUtils } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/utils/SkeletonUtils.js";
 
+/* ======= DOM ======= */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -71,87 +86,114 @@ const pauseBtn = document.getElementById("pauseBtn");
 const loopChk = document.getElementById("loopChk");
 const speed = document.getElementById("speed");
 const drop = document.getElementById("drop");
+const errorToast = document.getElementById("errorToast");
 
+/* ======= 全域狀態 ======= */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, mixer;
 const actions = new Map(); // name -> THREE.AnimationAction
 let currentAction = null;
 
-init();
-animate();
+init().catch(showFatal);
 
-function init(){
-  renderer = new THREE.WebGLRenderer({antialias:true});
-  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true;
-  app.appendChild(renderer.domElement);
+async function init(){
+  try{
+    // 基礎 Three.js 場景
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    app.appendChild(renderer.domElement);
 
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0f1115);
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0f1115);
 
-  camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .1, 100);
-  camera.position.set(0,1.6,3);
+    camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .1, 100);
+    camera.position.set(0,1.6,3);
 
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0,1,0);
-  controls.update();
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0,1,0);
+    controls.update();
 
-  // Lights
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x202035, .9);
-  scene.add(hemi);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.2);
-  dir.position.set(3,5,2);
-  dir.castShadow = true;
-  dir.shadow.mapSize.set(2048,2048);
-  scene.add(dir);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x202035, .9);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+    dir.position.set(3,5,2);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048,2048);
+    scene.add(dir);
 
-  // Floor
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(30,30),
-    new THREE.MeshStandardMaterial({color:0x171a24, roughness:1})
-  );
-  floor.rotation.x = -Math.PI/2;
-  floor.receiveShadow = true;
-  scene.add(floor);
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(30,30),
+      new THREE.MeshStandardMaterial({color:0x171a24, roughness:1})
+    );
+    floor.rotation.x = -Math.PI/2;
+    floor.receiveShadow = true;
+    scene.add(floor);
 
-  // Events
-  window.addEventListener("resize", onResize);
-  btnLoadModel.addEventListener("click", ()=>loadCharacterFromURL("./character.glb"));
-  charInput.addEventListener("change", e=>{
-    const f = e.target.files?.[0]; if(!f) return;
-    loadCharacterFromFile(f);
-  });
-  motionInput.addEventListener("change", e=>{
-    if(!ensureModel()) return;
-    const files = [...(e.target.files||[])];
-    loadMultipleMotions(files);
-  });
-  motionSelect.addEventListener("change", ()=>{
-    const name = motionSelect.value;
-    switchToAction(name, 0.35);
-  });
-  playBtn.addEventListener("click", ()=>{ currentAction?.play(); currentAction && (currentAction.paused=false); setStatus("播放"); });
-  pauseBtn.addEventListener("click", ()=>{ if(currentAction){ currentAction.paused = true; setStatus("暫停"); }});
-  speed.addEventListener("input", ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
-  loopChk.addEventListener("change", ()=>{
-    for(const a of actions.values()){
-      a.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-      a.clampWhenFinished = !loopChk.checked;
-    }
-  });
+    // 事件
+    window.addEventListener("resize", onResize);
+    btnLoadModel.addEventListener("click", ()=>loadCharacterFromURL("./character.glb"));
+    charInput.addEventListener("change", e=>{
+      const f = e.target.files?.[0]; if(!f) return;
+      loadCharacterFromFile(f);
+    });
+    motionInput.addEventListener("change", e=>{
+      if(!ensureModel()) return;
+      const files = [...(e.target.files||[])];
+      loadMultipleMotions(files);
+    });
+    document.getElementById("btnLoadSamples").addEventListener("click", async ()=>{
+      if(!ensureModel()) return;
+      try{
+        setStatus("載入示範動作中…");
+        // 三個示範：Walk/Run/Jump（GitHub raw，CORS OK）
+        const samples = [
+          {name:"Walk (07_01)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"},
+          {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
+          {name:"Jump (13_39)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_39.bvh"},
+        ];
+        for(const s of samples){
+          await loadBVHFromURL(s.url, s.name);
+        }
+        setStatus(`已載入 ${actions.size} 支動作`);
+        if(actions.size && !currentAction){
+          const first = actions.keys().next().value;
+          motionSelect.value = first;
+          switchToAction(first, 0.0);
+        }
+      }catch(err){ showError("示範動作載入失敗：" + err.message); }
+    });
 
-  // Drag & Drop for motions
-  window.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("active"); });
-  window.addEventListener("dragleave", e=>{ drop.classList.remove("active"); });
-  window.addEventListener("drop", e=>{
-    e.preventDefault(); drop.classList.remove("active");
-    if(!ensureModel()) return;
-    const files = [...(e.dataTransfer?.files||[])];
-    if(files.length) loadMultipleMotions(files);
-  });
+    motionSelect.addEventListener("change", ()=>{
+      const name = motionSelect.value;
+      switchToAction(name, 0.35);
+    });
+    playBtn.addEventListener("click", ()=>{ currentAction?.play(); currentAction && (currentAction.paused=false); setStatus("播放"); });
+    pauseBtn.addEventListener("click", ()=>{ if(currentAction){ currentAction.paused = true; setStatus("暫停"); }});
+    speed.addEventListener("input", ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
+    loopChk.addEventListener("change", ()=>{
+      for(const a of actions.values()){
+        a.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        a.clampWhenFinished = !loopChk.checked;
+      }
+    });
 
-  setStatus("請先載入角色（按鈕或上傳 GLB）");
+    // Drag & Drop for motions
+    window.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("active"); });
+    window.addEventListener("dragleave", e=>{ drop.classList.remove("active"); });
+    window.addEventListener("drop", e=>{
+      e.preventDefault(); drop.classList.remove("active");
+      if(!ensureModel()) return;
+      const files = [...(e.dataTransfer?.files||[])];
+      if(files.length) loadMultipleMotions(files);
+    });
+
+    setStatus("請先載入角色（按鈕或上傳 GLB）");
+    animate();
+  }catch(err){
+    showFatal(err);
+  }
 }
 
 function onResize(){
@@ -163,9 +205,17 @@ function onResize(){
 async function loadCharacterFromURL(url){
   try{
     setStatus("載入角色中…");
+    // 先 HEAD 檢查路徑是否存在（幫助新手排錯）
+    try{
+      const head = await fetch(url, {method:"HEAD"});
+      if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
+    }catch(e){
+      showError("找不到預設角色：請確認 `character.glb` 與 `index.html` 在同一層，且檔名大小寫正確。");
+      throw e;
+    }
     const gltf = await new GLTFLoader().loadAsync(url);
     useLoadedCharacter(gltf.scene);
-  }catch(err){ setStatus("載入角色失敗："+err.message); console.error(err); }
+  }catch(err){ showError("載入角色失敗："+err.message); }
 }
 
 async function loadCharacterFromFile(file){
@@ -175,7 +225,7 @@ async function loadCharacterFromFile(file){
     const gltf = await new GLTFLoader().loadAsync(url);
     URL.revokeObjectURL(url);
     useLoadedCharacter(gltf.scene);
-  }catch(err){ setStatus("上傳角色失敗："+err.message); console.error(err); }
+  }catch(err){ showError("上傳角色失敗："+err.message); }
 }
 
 function useLoadedCharacter(sceneObj){
@@ -192,123 +242,19 @@ function useLoadedCharacter(sceneObj){
   mixer = new THREE.AnimationMixer(model);
   mixer.timeScale = Number(speed.value);
 
-  setStatus("角色 OK：上傳 .bvh 或含動畫的 .glb");
+  setStatus("角色 OK：上傳 .bvh 或含動畫的 .glb，或點『一鍵載入示範動作』");
 }
 
 function ensureModel(){
-  if(!model){ setStatus("請先載入角色"); return false; }
+  if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; }
   return true;
 }
 
 async function loadMultipleMotions(files){
   const bvhFiles = files.filter(f=>f.name.toLowerCase().endsWith(".bvh"));
   const glbFiles = files.filter(f=>/\.(glb|gltf)$/i.test(f.name));
-  if(bvhFiles.length){ setStatus(`載入 ${bvhFiles.length} 支 BVH…`); for(const f of bvhFiles){ await loadBVH(f).catch(err=>console.error(err)); } }
-  if(glbFiles.length){ setStatus(`載入 ${glbFiles.length} 個 GLB 動作來源…`); for(const f of glbFiles){ await loadMotionGLB(f).catch(err=>console.error(err)); } }
+  if(bvhFiles.length){ setStatus(`載入 ${bvhFiles.length} 支 BVH…`); for(const f of bvhFiles){ await loadBVHFromFile(f).catch(err=>showError(err.message)); } }
+  if(glbFiles.length){ setStatus(`載入 ${glbFiles.length} 個 GLB 動作來源…`); for(const f of glbFiles){ await loadMotionGLB(f).catch(err=>showError(err.message)); } }
   setStatus(`已載入 ${actions.size} 支動作`);
-  // 自動播放第一支
   if(actions.size && !currentAction){
-    const first = actions.keys().next().value;
-    motionSelect.value = first;
-    switchToAction(first, 0.0);
-  }
-}
-
-async function loadBVH(file){
-  const url = URL.createObjectURL(file);
-  const loader = new BVHLoader();
-  const res = await loader.loadAsync(url);
-  URL.revokeObjectURL(url);
-
-  const sourceSkel = res.skeleton;
-  let clip = res.clip.clone();
-  // 移除 position 軌，避免 root-motion 把人拖著走
-  clip.tracks = clip.tracks.filter(t=>!t.name.endsWith(".position"));
-
-  // 重定向到目標骨架
-  const retargeted = SkeletonUtils.retargetClip(
-    targetSkeleton,
-    sourceSkel,
-    clip,
-    { preserveHipPosition:true, useTargetMatrix:true }
-  );
-  addAction(retargeted, file.name.replace(/\.(bvh)$/i,""));
-}
-
-async function loadMotionGLB(file){
-  // 將「含動畫的 GLB（也含一套骨架）」的每個 clip 重定向到目標骨架
-  const url = URL.createObjectURL(file);
-  const gltf = await new GLTFLoader().loadAsync(url);
-  URL.revokeObjectURL(url);
-
-  // 找 source skeleton
-  let sourceSkeleton = null;
-  gltf.scene.traverse(o=>{ if(o.isSkinnedMesh && !sourceSkeleton){ sourceSkeleton = o.skeleton; }});
-  if(!sourceSkeleton || !gltf.animations?.length){
-    setStatus(`GLB 無可用骨架/動畫：${file.name}`); return;
-  }
-
-  gltf.animations.forEach((clip, idx)=>{
-    const clean = clip.clone();
-    clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
-    const retargeted = SkeletonUtils.retargetClip(
-      targetSkeleton,
-      sourceSkeleton,
-      clean,
-      { preserveHipPosition:true, useTargetMatrix:true }
-    );
-    const name = `${file.name.replace(/\.(gltf|glb)$/i,"")} / ${clip.name||("Clip"+idx)}`;
-    addAction(retargeted, name);
-  });
-}
-
-function addAction(clip, name){
-  const action = mixer.clipAction(clip);
-  action.enabled = true;
-  action.setLoop(loopChk.checked?THREE.LoopRepeat:THREE.LoopOnce, Infinity);
-  action.clampWhenFinished = !loopChk.checked;
-  action.time = 0;
-  action.paused = false;
-
-  actions.set(name, action);
-  updateMotionSelect();
-}
-
-function updateMotionSelect(){
-  motionSelect.innerHTML = "";
-  if(!actions.size){
-    const opt = document.createElement("option");
-    opt.disabled = true; opt.selected = true; opt.textContent="（尚未載入動作）";
-    motionSelect.appendChild(opt);
-    return;
-  }
-  for(const name of actions.keys()){
-    const opt = document.createElement("option");
-    opt.value = name; opt.textContent = name;
-    motionSelect.appendChild(opt);
-  }
-}
-
-function switchToAction(name, fade=0.35){
-  const next = actions.get(name);
-  if(!next){ setStatus("找不到動作："+name); return; }
-  if(currentAction && currentAction !== next){
-    currentAction.crossFadeTo(next.reset().play(), fade, true);
-  }else{
-    next.reset().play();
-  }
-  currentAction = next;
-  setStatus(`播放：${name}`);
-}
-
-function setStatus(msg){ statusEl.textContent = msg; }
-
-function animate(){
-  requestAnimationFrame(animate);
-  const dt = clock.getDelta();
-  mixer?.update(dt);
-  renderer.render(scene, camera);
-}
-</script>
-</body>
-</html>
+    const first = actions.ke
