@@ -85,7 +85,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
-import { SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
@@ -378,3 +378,4 @@ window.addEventListener("unhandledrejection", (e)=> showError("Promise 錯誤：
 <noscript>需要啟用 JavaScript 才能運行此 Demo。</noscript>
 </body>
 </html>
+
