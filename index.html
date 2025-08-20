@@ -40,7 +40,9 @@
 
   <div class="row" style="width:100%">
     <span class="badge">Step 2</span>
-    <label>上傳動作（.bvh 或 .glb）<input id="motionInput" type="file" accept=".bvh,.glb,.gltf" multiple/></label>
+    <label>上傳動作（.bvh 或 .glb）
+      <input id="motionInput" type="file" accept=".bvh,.glb,.gltf" multiple/>
+    </label>
     <button id="btnLoadSamples">一鍵載入示範動作（Walk/Run/Jump）</button>
   </div>
 
@@ -62,7 +64,7 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- 讓所有瀏覽器都吃 import map / 裸匯入 -->
+<!-- 讓所有瀏覽器支援 import map / 裸匯入 -->
 <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1/dist/es-module-shims.min.js"></script>
 
 <!-- import map：把 'three' 與 examples 映射到 CDN -->
@@ -81,8 +83,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // ✅ 用 namespace 匯入
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // namespace 匯入
 
+/* ---- DOM ---- */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -96,11 +99,13 @@ const speed = document.getElementById("speed");
 const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 
+/* ---- State ---- */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, mixer;
 const actions = new Map();
 let currentAction = null;
 
+/* ---- Init ---- */
 init().catch(showFatal);
 
 async function init(){
@@ -199,6 +204,7 @@ function onResize(){
   renderer.setSize(innerWidth, innerHeight);
 }
 
+/* ---- Loaders ---- */
 async function loadCharacterFromURL(url){
   try{
     setStatus("載入角色中…");
@@ -271,24 +277,30 @@ async function loadBVHFromURL(url, displayName){
   addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh)$/i,""));
 }
 
-/* ✅ 這段是關鍵修正：同時相容不同 BVHLoader 回傳格式 */
+/* ---- 兼容所有 BVHLoader 回傳格式的重定向 ---- */
 function addRetargetedClip(bvhResult, name){
-  if(!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
+  if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
 
-  // 有的 three 版本回傳 result.skeleton，有的只有 result.skeletonHelper.skeleton
-  const sourceSkeleton =
-    bvhResult.skeleton ??
-    bvhResult.skeletonHelper?.skeleton ??
-    (bvhResult.skeletonHelper?.isSkeletonHelper ? bvhResult.skeletonHelper.skeleton : null);
+  // 盡可能取得來源 skeleton；最後用 bones 自組 Skeleton
+  let sourceSkeleton =
+      (bvhResult.skeleton && bvhResult.skeleton.bones?.length ? bvhResult.skeleton : null) ||
+      (bvhResult.skeletonHelper?.skeleton && bvhResult.skeletonHelper.skeleton.bones?.length ? bvhResult.skeletonHelper.skeleton : null);
 
-  if(!sourceSkeleton || !sourceSkeleton.bones?.length){
+  if (!sourceSkeleton && bvhResult.skeletonHelper?.bones?.length) {
+    sourceSkeleton = new THREE.Skeleton(bvhResult.skeletonHelper.bones);
+  }
+  if (!sourceSkeleton && bvhResult.restPose?.bones?.length) {
+    sourceSkeleton = new THREE.Skeleton(bvhResult.restPose.bones);
+  }
+
+  if (!sourceSkeleton || !sourceSkeleton.bones?.length) {
     console.warn("BVH result keys:", Object.keys(bvhResult));
     throw new Error("BVH 檔案沒有解析到 skeleton（或格式不相容）。");
   }
 
   // 取動畫並移除 root 位移（避免被拖著走）
   let clip = bvhResult.clip?.clone?.() ?? bvhResult.clip;
-  if(!clip) throw new Error("BVH 檔案內沒有可用的動畫 clip。");
+  if (!clip) throw new Error("BVH 檔案內沒有可用的動畫 clip。");
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position"));
 
   // 重定向到你的角色骨架
@@ -372,7 +384,7 @@ function animate(){
   renderer.render(scene, camera);
 }
 
-/* 簡易錯誤顯示 */
+/* ---- 簡易錯誤顯示 ---- */
 function showError(msg){
   console.error(msg);
   setStatus("⚠️ " + msg);
