@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH / GLB → 角色重定向</title>
+<title>Mocap Demo｜BVH / GLB → 角色重定向（免 import map 版）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -66,27 +66,14 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- ✅ es-module-shims（一定要在最前面引入） -->
-<script src="https://cdn.jsdelivr.net/npm/es-module-shims@1/dist/es-module-shims.min.js"></script>
-
-<!-- ✅ 用 importmap-shim（不是 importmap） -->
-<script type="importmap-shim">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js",
-    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/"
-  }
-}
-</script>
-
-<!-- ✅ 用 module-shim（不是 module） -->
-<script type="module-shim">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+<!-- ✅ 直接用 esm.sh，不需要 import map / module-shims -->
+<script type="module">
+/* 固定 three 到 r152（穩定的 BVHLoader） */
+import * as THREE from 'https://esm.sh/three@0.152.2';
+import { OrbitControls } from 'https://esm.sh/three@0.152.2/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GLTFLoader.js';
+import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
+import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
 /* ---- 常用遠端模型 URL ---- */
 const ROBOT_URL = "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/RobotExpressive/glTF-Binary/RobotExpressive.glb";
@@ -223,7 +210,7 @@ function onResize(){
 async function loadCharacterFromURL(url, label){
   try{
     setStatus(`載入角色中…${label?`（${label}）`:''}`);
-    if(!/^https?:/i.test(url)){ // 只有本地相對路徑才 HEAD 檢查
+    if(!/^https?:/i.test(url)){ // 只有本地相對路徑才做 HEAD 檢查
       try{
         const head = await fetch(url, {method:"HEAD"});
         if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
@@ -297,7 +284,6 @@ async function loadBVHFromURL(url, displayName){
 /* ---- 相容所有 BVHLoader 回傳格式 ---- */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
-
   // 安全取得 bones 陣列
   let bonesArray = null;
   if (bvhResult && typeof bvhResult === 'object') {
@@ -312,7 +298,6 @@ function addRetargetedClip(bvhResult, name){
     showError("BVH 檔案沒有解析到 skeleton。\nkeys: " + JSON.stringify(Object.keys(bvhResult||{})));
     throw new Error("BVH 無 bones");
   }
-
   // 包裝成 THREE.Skeleton
   const sourceSkeleton = (bvhResult.skeleton && bvhResult.skeleton.bones === bonesArray)
     ? bvhResult.skeleton
@@ -330,7 +315,6 @@ function addRetargetedClip(bvhResult, name){
     clip,
     { preserveHipPosition: true, useTargetMatrix: true }
   );
-
   addAction(retargeted, name);
 }
 
