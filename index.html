@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH / GLB → 角色重定向（免 import map 版）</title>
+<title>Mocap Demo｜BVH / GLB → 角色重定向（穩定版）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -67,18 +67,15 @@
 <div id="errorToast"></div>
 
 <script type="module">
-/* 直接用 esm.sh，固定 three r152（BVHLoader 穩定） */
 import * as THREE from 'https://esm.sh/three@0.152.2';
 import { OrbitControls } from 'https://esm.sh/three@0.152.2/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GLTFLoader.js';
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* ---- 遠端模型 ---- */
 const ROBOT_URL = "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/RobotExpressive/glTF-Binary/RobotExpressive.glb";
 const SOLDIER_URL = "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/models/gltf/Soldier.glb";
 
-/* ---- DOM ---- */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -94,13 +91,11 @@ const speed = document.getElementById("speed");
 const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 
-/* ---- State ---- */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, mixer;
 const actions = new Map();
 let currentAction = null;
 
-/* ---- Init ---- */
 init().catch(showFatal);
 
 async function init(){
@@ -188,7 +183,7 @@ async function init(){
     });
 
     window.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("active"); });
-    window.addEventListener("dragleave", e=>{ drop.classList.remove("active"); });
+    window.addEventListener("dragleave", ()=>{ drop.classList.remove("active"); });
     window.addEventListener("drop", e=>{
       e.preventDefault(); drop.classList.remove("active");
       if(!ensureModel()) return;
@@ -197,6 +192,7 @@ async function init(){
     });
 
     setStatus("請先載入角色（按鈕或上傳 GLB）");
+    console.log("Init OK");
     animate();
   }catch(err){ showFatal(err); }
 }
@@ -207,18 +203,12 @@ function onResize(){
   renderer.setSize(innerWidth, innerHeight);
 }
 
-/* ---- Loaders ---- */
 async function loadCharacterFromURL(url, label){
   try{
     setStatus(`載入角色中…${label?`（${label}）`:''}`);
     if(!/^https?:/i.test(url)){
-      try{
-        const head = await fetch(url, {method:"HEAD"});
-        if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
-      }catch(e){
-        showError("找不到預設角色：請確認 `character.glb` 與 `index.html` 在同一層，且檔名大小寫正確。");
-        throw e;
-      }
+      const head = await fetch(url, {method:"HEAD"});
+      if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
     }
     const gltf = await new GLTFLoader().loadAsync(url);
     useLoadedCharacter(gltf.scene, gltf.animations||[]);
@@ -236,7 +226,14 @@ async function loadCharacterFromFile(file){
 }
 
 function useLoadedCharacter(sceneObj, characterClips=[]){
-  if(model){ scene.remove(model); mixer?.stopAllAction(); for(const a of actions.values()) a.stop(); actions.clear(); updateMotionSelect(); currentAction=null; targetSkeleton=null; }
+  if(model){
+    scene.remove(model);
+    mixer?.stopAllAction();
+    for(const a of actions.values()) a.stop();
+    actions.clear();
+    updateMotionSelect();
+    currentAction=null; targetSkeleton=null;
+  }
   model = sceneObj;
   model.traverse(o=>{
     if(o.isSkinnedMesh){ o.castShadow = true; o.frustumCulled = false; targetSkeleton ??= o.skeleton; }
@@ -248,11 +245,9 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   mixer = new THREE.AnimationMixer(model);
   mixer.timeScale = Number(speed.value);
 
-  // 內建動畫直接可播
   if(Array.isArray(characterClips) && characterClips.length){
     characterClips.forEach((clip, idx)=>{
-      const clean = clip.clone();
-      addAction(clean, `GLB / ${clip.name || ("Clip"+idx)}`);
+      addAction(clip.clone(), `GLB / ${clip.name || ("Clip"+idx)}`);
     });
     updateMotionSelect();
     const first = actions.keys().next().value;
@@ -300,7 +295,6 @@ async function loadBVHFromURL(url, displayName){
   addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh)$/i,""));
 }
 
-/* ---- BVH 相容層 → 重定向到角色骨架 ---- */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
   let bonesArray = null;
@@ -362,7 +356,6 @@ function addAction(clip, name){
   action.clampWhenFinished = !loopChk.checked;
   action.time = 0;
   action.paused = false;
-
   actions.set(name, action);
   updateMotionSelect();
 }
@@ -403,7 +396,6 @@ function animate(){
   renderer.render(scene, camera);
 }
 
-/* ---- 簡易錯誤顯示 ---- */
 function showError(msg){
   console.error(msg);
   setStatus("⚠️ " + msg);
