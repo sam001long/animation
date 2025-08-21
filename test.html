@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8">
+<title>panel-check</title>
+<style>body{margin:0;background:#0f1115;color:#e8e8ea;font-family:sans-serif}
+#togglePanel{position:fixed;left:12px;top:12px;width:44px;height:44px;border-radius:12px;border:1px solid #283044;background:#111523;color:#e8e8ea;font-size:22px;line-height:44px;text-align:center}</style>
+<button id="togglePanel">☰</button>
+<div id="ui" style="position:fixed;left:12px;top:64px;background:#161922;padding:10px 12px;border-radius:14px;display:none">看見這塊=新版已上線</div>
+<script type="module">
+const btn=document.getElementById('togglePanel'),ui=document.getElementById('ui');
+let open=false;btn.onclick=()=>{open=!open;ui.style.display=open?'block':'none';btn.textContent=open?'×':'☰'};
+</script>
