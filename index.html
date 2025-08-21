@@ -187,11 +187,13 @@ async function init(){
     if(!ensureModel()) return;
     try{
       setStatus("載入示範動作中…");
-      const samples = [
-        {name:"Walk (07_01)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"},
-        {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
-        {name:"Jump (13_39)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_39.bvh"}
-      ];
+     const samples = [
+  {name:"Walk (07_01)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"},
+  {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
+  {name:"Pirouette",    url:"https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/Pirouette.bvh"}
+  // 或者 {name:"Samba", url:"https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/SambaDancing.bvh"}
+];
+
       for (const s of samples) {
         try { await loadBVHFromURL(s.url, s.name); }
         catch (e) { showError(`示範動作載入失敗（${s.name}）：` + (e?.message||e)); }
@@ -494,3 +496,4 @@ window.addEventListener("unhandledrejection", (e)=> showError("Promise 錯誤：
 <noscript>需要啟用 JavaScript 才能運行此 Demo。</noscript>
 </body>
 </html>
+
