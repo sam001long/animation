@@ -73,9 +73,11 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-const ROBOT_URL = "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/RobotExpressive/glTF-Binary/RobotExpressive.glb";
-const SOLDIER_URL = "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/models/gltf/Soldier.glb";
+/* 避免 403/404 的穩定來源 */
+const ROBOT_URL   = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/RobotExpressive/glTF-Binary/RobotExpressive.glb";
+const SOLDIER_URL = "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb";
 
+/* DOM */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -91,11 +93,13 @@ const speed = document.getElementById("speed");
 const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 
+/* State */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, mixer;
 const actions = new Map();
 let currentAction = null;
 
+/* Init */
 init().catch(showFatal);
 
 async function init(){
@@ -158,7 +162,10 @@ async function init(){
           {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
           {name:"Jump (13_39)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_39.bvh"}
         ];
-        for(const s of samples){ await loadBVHFromURL(s.url, s.name); }
+        for (const s of samples) {
+          try { await loadBVHFromURL(s.url, s.name); }
+          catch (e) { showError(`示範動作載入失敗（${s.name}）：` + (e?.message||e)); }
+        }
         setStatus(`已載入 ${actions.size} 支動作`);
         if(actions.size && !currentAction){
           const first = actions.keys().next().value;
@@ -192,7 +199,6 @@ async function init(){
     });
 
     setStatus("請先載入角色（按鈕或上傳 GLB）");
-    console.log("Init OK");
     animate();
   }catch(err){ showFatal(err); }
 }
@@ -203,6 +209,7 @@ function onResize(){
   renderer.setSize(innerWidth, innerHeight);
 }
 
+/* Loaders */
 async function loadCharacterFromURL(url, label){
   try{
     setStatus(`載入角色中…${label?`（${label}）`:''}`);
@@ -245,10 +252,9 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   mixer = new THREE.AnimationMixer(model);
   mixer.timeScale = Number(speed.value);
 
+  // 角色內建的動畫也加進清單（立即可播）
   if(Array.isArray(characterClips) && characterClips.length){
-    characterClips.forEach((clip, idx)=>{
-      addAction(clip.clone(), `GLB / ${clip.name || ("Clip"+idx)}`);
-    });
+    characterClips.forEach((clip, idx)=> addAction(clip.clone(), `GLB / ${clip.name || ("Clip"+idx)}`));
     updateMotionSelect();
     const first = actions.keys().next().value;
     if(first){ motionSelect.value = first; switchToAction(first, 0.0); }
@@ -295,36 +301,48 @@ async function loadBVHFromURL(url, displayName){
   addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh)$/i,""));
 }
 
+/* BVH 相容層（避免讀 undefined.bones） */
 function addRetargetedClip(bvhResult, name){
-  if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
+  if (!targetSkeleton) { showError("請先載入角色再載入動作"); return; }
+  if (!bvhResult || typeof bvhResult !== 'object') {
+    showError(`BVH 解析結果異常：${bvhResult}`); return;
+  }
+
   let bonesArray = null;
-  if (bvhResult && typeof bvhResult === 'object') {
-    const r = bvhResult;
-    if (r.skeleton?.bones?.length) bonesArray = r.skeleton.bones;
-    else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray = r.skeletonHelper.skeleton.bones;
-    else if (r.skeletonHelper?.bones?.length) bonesArray = r.skeletonHelper.bones;
-    else if (Array.isArray(r.bones) && r.bones.length) bonesArray = r.bones;
-    else if (r.restPose?.bones?.length) bonesArray = r.restPose.bones;
-  }
+  const r = bvhResult;
+  if (r.skeleton?.bones?.length) bonesArray = r.skeleton.bones;
+  else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray = r.skeletonHelper.skeleton.bones;
+  else if (r.skeletonHelper?.bones?.length) bonesArray = r.skeletonHelper.bones;
+  else if (Array.isArray(r.bones) && r.bones.length) bonesArray = r.bones;
+  else if (r.restPose?.bones?.length) bonesArray = r.restPose.bones;
+
   if (!bonesArray) {
-    showError("BVH 檔案沒有解析到 skeleton。keys: " + JSON.stringify(Object.keys(bvhResult||{})));
-    throw new Error("BVH 無 bones");
+    console.warn("BVH keys:", Object.keys(r));
+    showError(`這支 BVH 未解析到骨架，已跳過：${name}`);
+    return;
   }
-  const sourceSkeleton = (bvhResult.skeleton && bvhResult.skeleton.bones === bonesArray)
-    ? bvhResult.skeleton
+
+  const sourceSkeleton = (r.skeleton && r.skeleton.bones === bonesArray)
+    ? r.skeleton
     : new THREE.Skeleton(bonesArray);
 
-  let clip = (bvhResult?.clip && typeof bvhResult.clip.clone === 'function') ? bvhResult.clip.clone() : bvhResult.clip;
-  if (!clip) throw new Error("BVH 檔案內沒有可用的動畫 clip。");
+  let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
+  if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
+
+  // 避免 root 被拖著走
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position"));
 
-  const retargeted = SkeletonUtils.retargetClip(
-    targetSkeleton,
-    sourceSkeleton,
-    clip,
-    { preserveHipPosition: true, useTargetMatrix: true }
-  );
-  addAction(retargeted, name);
+  try{
+    const retargeted = SkeletonUtils.retargetClip(
+      targetSkeleton,
+      sourceSkeleton,
+      clip,
+      { preserveHipPosition: true, useTargetMatrix: true }
+    );
+    addAction(retargeted, name);
+  }catch(e){
+    showError(`重定向失敗（${name}）：` + (e?.message||e));
+  }
 }
 
 async function loadMotionGLB(file){
@@ -396,9 +414,10 @@ function animate(){
   renderer.render(scene, camera);
 }
 
+/* 錯誤顯示 */
 function showError(msg){
   console.error(msg);
-  setStatus("⚠️ " + msg);
+  statusEl.textContent = "⚠️ " + msg;
   errorToast.textContent = "⚠️ " + msg;
   errorToast.style.display = "block";
 }
@@ -406,7 +425,7 @@ function showFatal(err){
   console.error(err);
   errorToast.textContent = "🚫 初始化失敗：\n" + (err?.message || err);
   errorToast.style.display = "block";
-  setStatus("🚫 初始化失敗");
+  statusEl.textContent = "🚫 初始化失敗";
 }
 window.addEventListener("error", (e)=> showError("腳本錯誤："+ (e?.message||"unknown")));
 window.addEventListener("unhandledrejection", (e)=> showError("Promise 錯誤："+ (e?.reason?.message || e?.reason || "unknown")));
