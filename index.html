@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH / GLB → 角色重定向</title>
+<title>Mocap Demo｜多動作切換（BVH / GLB → 角色重定向）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -34,7 +34,9 @@
   <div class="row">
     <span class="badge">Step 1</span>
     <button id="btnLoadModel">載入預設角色（./character.glb）</button>
-    <label>或上傳角色 <input id="charInput" type="file" accept=".glb,.gltf"/></label>
+    <label>或上傳角色
+      <input id="charInput" type="file" accept=".glb,.gltf"/>
+    </label>
     <span id="status">初始化中…</span>
   </div>
 
@@ -64,28 +66,15 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- es-module-shims：讓所有瀏覽器吃 import map -->
-<script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1/dist/es-module-shims.min.js"></script>
-
-<!-- 固定 three 到 r152（BVH 最穩的版本帶） -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js",
-    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/"
-  }
-}
-</script>
-
 <script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+/* ======= 模組載入（使用 jsDelivr） ======= */
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js";
+import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/GLTFLoader.js";
+import { BVHLoader } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/loaders/BVHLoader.js";
+import { SkeletonUtils } from "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/utils/SkeletonUtils.js";
 
-/* ---- DOM ---- */
+/* ======= DOM ======= */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -99,103 +88,112 @@ const speed = document.getElementById("speed");
 const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 
-/* ---- State ---- */
+/* ======= 全域狀態 ======= */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, mixer;
-const actions = new Map();
+const actions = new Map(); // name -> THREE.AnimationAction
 let currentAction = null;
 
-/* ---- Init ---- */
 init().catch(showFatal);
 
 async function init(){
-  renderer = new THREE.WebGLRenderer({antialias:true});
-  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true;
-  app.appendChild(renderer.domElement);
+  try{
+    // 基礎 Three.js 場景
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    app.appendChild(renderer.domElement);
 
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0f1115);
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0f1115);
 
-  camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .1, 100);
-  camera.position.set(0,1.6,3);
+    camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .1, 100);
+    camera.position.set(0,1.6,3);
 
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0,1,0);
-  controls.update();
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0,1,0);
+    controls.update();
 
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x202035, .9);
-  scene.add(hemi);
-  const dir = new THREE.DirectionalLight(0xffffff, 1.2);
-  dir.position.set(3,5,2);
-  dir.castShadow = true;
-  dir.shadow.mapSize.set(2048,2048);
-  scene.add(dir);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x202035, .9);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+    dir.position.set(3,5,2);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048,2048);
+    scene.add(dir);
 
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(30,30),
-    new THREE.MeshStandardMaterial({color:0x171a24, roughness:1})
-  );
-  floor.rotation.x = -Math.PI/2;
-  floor.receiveShadow = true;
-  scene.add(floor);
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(30,30),
+      new THREE.MeshStandardMaterial({color:0x171a24, roughness:1})
+    );
+    floor.rotation.x = -Math.PI/2;
+    floor.receiveShadow = true;
+    scene.add(floor);
 
-  window.addEventListener("resize", onResize);
-  btnLoadModel.addEventListener("click", ()=>loadCharacterFromURL("./character.glb"));
-  charInput.addEventListener("change", e=>{
-    const f = e.target.files?.[0]; if(!f) return;
-    loadCharacterFromFile(f);
-  });
-  motionInput.addEventListener("change", e=>{
-    if(!ensureModel()) return;
-    const files = [...(e.target.files||[])];
-    loadMultipleMotions(files);
-  });
-  document.getElementById("btnLoadSamples").addEventListener("click", async ()=>{
-    if(!ensureModel()) return;
-    try{
-      setStatus("載入示範動作中…");
-      const samples = [
-        {name:"Walk (07_01)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"},
-        {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
-        {name:"Jump (13_39)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_39.bvh"}
-      ];
-      for(const s of samples){ await loadBVHFromURL(s.url, s.name); }
-      setStatus(`已載入 ${actions.size} 支動作`);
-      if(actions.size && !currentAction){
-        const first = actions.keys().next().value;
-        motionSelect.value = first;
-        switchToAction(first, 0.0);
+    // 事件
+    window.addEventListener("resize", onResize);
+    btnLoadModel.addEventListener("click", ()=>loadCharacterFromURL("./character.glb"));
+    charInput.addEventListener("change", e=>{
+      const f = e.target.files?.[0]; if(!f) return;
+      loadCharacterFromFile(f);
+    });
+    motionInput.addEventListener("change", e=>{
+      if(!ensureModel()) return;
+      const files = [...(e.target.files||[])];
+      loadMultipleMotions(files);
+    });
+    document.getElementById("btnLoadSamples").addEventListener("click", async ()=>{
+      if(!ensureModel()) return;
+      try{
+        setStatus("載入示範動作中…");
+        // 三個示範：Walk/Run/Jump（GitHub raw，CORS OK）
+        const samples = [
+          {name:"Walk (07_01)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"},
+          {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
+          {name:"Jump (13_39)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/013/13_39.bvh"},
+        ];
+        for(const s of samples){
+          await loadBVHFromURL(s.url, s.name);
+        }
+        setStatus(`已載入 ${actions.size} 支動作`);
+        if(actions.size && !currentAction){
+          const first = actions.keys().next().value;
+          motionSelect.value = first;
+          switchToAction(first, 0.0);
+        }
+      }catch(err){ showError("示範動作載入失敗：" + err.message); }
+    });
+
+    motionSelect.addEventListener("change", ()=>{
+      const name = motionSelect.value;
+      switchToAction(name, 0.35);
+    });
+    playBtn.addEventListener("click", ()=>{ currentAction?.play(); currentAction && (currentAction.paused=false); setStatus("播放"); });
+    pauseBtn.addEventListener("click", ()=>{ if(currentAction){ currentAction.paused = true; setStatus("暫停"); }});
+    speed.addEventListener("input", ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
+    loopChk.addEventListener("change", ()=>{
+      for(const a of actions.values()){
+        a.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        a.clampWhenFinished = !loopChk.checked;
       }
-    }catch(err){ showError("示範動作載入失敗：" + err.message); }
-  });
+    });
 
-  motionSelect.addEventListener("change", ()=>{
-    const name = motionSelect.value;
-    switchToAction(name, 0.35);
-  });
-  playBtn.addEventListener("click", ()=>{ currentAction?.play(); currentAction && (currentAction.paused=false); setStatus("播放"); });
-  pauseBtn.addEventListener("click", ()=>{ if(currentAction){ currentAction.paused = true; setStatus("暫停"); }});
-  speed.addEventListener("input", ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
-  loopChk.addEventListener("change", ()=>{
-    for(const a of actions.values()){
-      a.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-      a.clampWhenFinished = !loopChk.checked;
-    }
-  });
+    // Drag & Drop for motions
+    window.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("active"); });
+    window.addEventListener("dragleave", e=>{ drop.classList.remove("active"); });
+    window.addEventListener("drop", e=>{
+      e.preventDefault(); drop.classList.remove("active");
+      if(!ensureModel()) return;
+      const files = [...(e.dataTransfer?.files||[])];
+      if(files.length) loadMultipleMotions(files);
+    });
 
-  window.addEventListener("dragover", e=>{ e.preventDefault(); drop.classList.add("active"); });
-  window.addEventListener("dragleave", e=>{ drop.classList.remove("active"); });
-  window.addEventListener("drop", e=>{
-    e.preventDefault(); drop.classList.remove("active");
-    if(!ensureModel()) return;
-    const files = [...(e.dataTransfer?.files||[])];
-    if(files.length) loadMultipleMotions(files);
-  });
-
-  setStatus("請先載入角色（按鈕或上傳 GLB）");
-  animate();
+    setStatus("請先載入角色（按鈕或上傳 GLB）");
+    animate();
+  }catch(err){
+    showFatal(err);
+  }
 }
 
 function onResize(){
@@ -204,10 +202,10 @@ function onResize(){
   renderer.setSize(innerWidth, innerHeight);
 }
 
-/* ---- Loaders ---- */
 async function loadCharacterFromURL(url){
   try{
     setStatus("載入角色中…");
+    // 先 HEAD 檢查路徑是否存在（幫助新手排錯）
     try{
       const head = await fetch(url, {method:"HEAD"});
       if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
@@ -231,6 +229,7 @@ async function loadCharacterFromFile(file){
 }
 
 function useLoadedCharacter(sceneObj){
+  // 清掉舊模型與動畫
   if(model){ scene.remove(model); mixer?.stopAllAction(); for(const a of actions.values()) a.stop(); actions.clear(); updateMotionSelect(); currentAction=null; targetSkeleton=null; }
   model = sceneObj;
   model.traverse(o=>{
@@ -269,7 +268,9 @@ async function loadBVHFromFile(file){
   try{
     const res = await new BVHLoader().loadAsync(url);
     addRetargetedClip(res, file.name.replace(/\.(bvh)$/i,""));
-  }finally{ URL.revokeObjectURL(url); }
+  }finally{
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function loadBVHFromURL(url, displayName){
@@ -277,43 +278,15 @@ async function loadBVHFromURL(url, displayName){
   addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh)$/i,""));
 }
 
-/* ---- 相容所有 BVHLoader 回傳格式 ---- */
 function addRetargetedClip(bvhResult, name){
-  if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
-
-  // 1) 嘗試取得 bones（保守判斷，避免對 undefined 取 .bones）
-  let bonesArray = null;
-  if (bvhResult && typeof bvhResult === 'object') {
-    const r = bvhResult;
-    if (r.skeleton && r.skeleton.bones && r.skeleton.bones.length) bonesArray = r.skeleton.bones;
-    else if (r.skeletonHelper && r.skeletonHelper.skeleton && r.skeletonHelper.skeleton.bones && r.skeletonHelper.skeleton.bones.length) bonesArray = r.skeletonHelper.skeleton.bones;
-    else if (r.skeletonHelper && r.skeletonHelper.bones && r.skeletonHelper.bones.length) bonesArray = r.skeletonHelper.bones;
-    else if (Array.isArray(r.bones) && r.bones.length) bonesArray = r.bones;
-    else if (r.restPose && r.restPose.bones && r.restPose.bones.length) bonesArray = r.restPose.bones;
-  }
-  if (!bonesArray) {
-    showError("BVH 檔案沒有解析到 skeleton。\nkeys: " + JSON.stringify(Object.keys(bvhResult||{})));
-    throw new Error("BVH 無 bones");
-  }
-
-  // 2) 包裝成 THREE.Skeleton
-  const sourceSkeleton = (bvhResult.skeleton && bvhResult.skeleton.bones === bonesArray)
-    ? bvhResult.skeleton
-    : new THREE.Skeleton(bonesArray);
-
-  // 3) 取動畫並移除 root 位移
-  let clip = (bvhResult && bvhResult.clip && typeof bvhResult.clip.clone === 'function') ? bvhResult.clip.clone() : bvhResult.clip;
-  if (!clip) throw new Error("BVH 檔案內沒有可用的動畫 clip。");
-  clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position"));
-
-  // 4) 重定向
+  if(!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
+  const sourceSkel = bvhResult.skeleton;
+  let clip = bvhResult.clip.clone();
+  clip.tracks = clip.tracks.filter(t=>!t.name.endsWith(".position")); // 去 root 位移
   const retargeted = SkeletonUtils.retargetClip(
-    targetSkeleton,
-    sourceSkeleton,
-    clip,
-    { preserveHipPosition: true, useTargetMatrix: true }
+    targetSkeleton, sourceSkel, clip,
+    { preserveHipPosition:true, useTargetMatrix:true }
   );
-
   addAction(retargeted, name);
 }
 
@@ -336,7 +309,9 @@ async function loadMotionGLB(file){
       const name = `${file.name.replace(/\.(gltf|glb)$/i,"")} / ${clip.name||("Clip"+idx)}`;
       addAction(retargeted, name);
     });
-  }finally{ URL.revokeObjectURL(url); }
+  }finally{
+    URL.revokeObjectURL(url);
+  }
 }
 
 function addAction(clip, name){
@@ -387,11 +362,11 @@ function animate(){
   renderer.render(scene, camera);
 }
 
-/* ---- 簡易錯誤顯示 ---- */
+/* ======= 簡易錯誤顯示 ======= */
 function showError(msg){
   console.error(msg);
   setStatus("⚠️ " + msg);
-  errorToast.textContent = "⚠️ " + msg;
+  errorToast.textContent = "⚠️ " + msg + "\n請按 F12 → Console 檢查詳細錯誤。";
   errorToast.style.display = "block";
 }
 function showFatal(err){
@@ -404,6 +379,7 @@ window.addEventListener("error", (e)=> showError("腳本錯誤："+ (e?.message|
 window.addEventListener("unhandledrejection", (e)=> showError("Promise 錯誤："+ (e?.reason?.message || e?.reason || "unknown")));
 </script>
 
+<!-- 若瀏覽器不支援 ES modules，顯示提示 -->
 <noscript>需要啟用 JavaScript 才能運行此 Demo。</noscript>
 </body>
 </html>
