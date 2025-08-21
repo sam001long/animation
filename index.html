@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜多動作切換（BVH / GLB → 角色重定向）</title>
+<title>Mocap Demo｜BVH / GLB → 角色重定向</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -64,16 +64,16 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- 讓所有瀏覽器支援 import map / 裸匯入 -->
+<!-- es-module-shims：讓所有瀏覽器吃 import map -->
 <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1/dist/es-module-shims.min.js"></script>
 
-<!-- import map：把 'three' 與 examples 映射到 CDN -->
+<!-- 固定 three 到 r152（BVH 最穩的版本帶） -->
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
-    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js",
+    "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/"
   }
 }
 </script>
@@ -83,7 +83,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // namespace 匯入
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 /* ---- DOM ---- */
 const app = document.getElementById("app");
@@ -277,40 +277,36 @@ async function loadBVHFromURL(url, displayName){
   addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh)$/i,""));
 }
 
-/* ---- 兼容所有 BVHLoader 回傳格式的重定向 ---- */
+/* ---- 相容所有 BVHLoader 回傳格式 ---- */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton) throw new Error("尚未載入角色骨架，無法重定向 BVH。");
 
-  // 1) 嘗試各種位置取到 bones 陣列
+  // 1) 嘗試取得 bones（保守判斷，避免對 undefined 取 .bones）
   let bonesArray = null;
-
-  if (bvhResult && bvhResult.skeleton && bvhResult.skeleton.bones && bvhResult.skeleton.bones.length) {
-    bonesArray = bvhResult.skeleton.bones;
-  } else if (bvhResult && bvhResult.skeletonHelper && bvhResult.skeletonHelper.skeleton && bvhResult.skeletonHelper.skeleton.bones && bvhResult.skeletonHelper.skeleton.bones.length) {
-    bonesArray = bvhResult.skeletonHelper.skeleton.bones;
-  } else if (bvhResult && bvhResult.skeletonHelper && bvhResult.skeletonHelper.bones && bvhResult.skeletonHelper.bones.length) {
-    bonesArray = bvhResult.skeletonHelper.bones;
-  } else if (bvhResult && bvhResult.bones && Array.isArray(bvhResult.bones) && bvhResult.bones.length) {
-    bonesArray = bvhResult.bones;
-  } else if (bvhResult && bvhResult.restPose && bvhResult.restPose.bones && bvhResult.restPose.bones.length) {
-    bonesArray = bvhResult.restPose.bones;
+  if (bvhResult && typeof bvhResult === 'object') {
+    const r = bvhResult;
+    if (r.skeleton && r.skeleton.bones && r.skeleton.bones.length) bonesArray = r.skeleton.bones;
+    else if (r.skeletonHelper && r.skeletonHelper.skeleton && r.skeletonHelper.skeleton.bones && r.skeletonHelper.skeleton.bones.length) bonesArray = r.skeletonHelper.skeleton.bones;
+    else if (r.skeletonHelper && r.skeletonHelper.bones && r.skeletonHelper.bones.length) bonesArray = r.skeletonHelper.bones;
+    else if (Array.isArray(r.bones) && r.bones.length) bonesArray = r.bones;
+    else if (r.restPose && r.restPose.bones && r.restPose.bones.length) bonesArray = r.restPose.bones;
   }
-
   if (!bonesArray) {
-    showError("BVH 檔案沒有解析到 skeleton。可用欄位："+JSON.stringify(Object.keys(bvhResult||{})));
+    showError("BVH 檔案沒有解析到 skeleton。\nkeys: " + JSON.stringify(Object.keys(bvhResult||{})));
     throw new Error("BVH 無 bones");
   }
 
-  // 2) 確保我們得到的是 THREE.Skeleton
-  let sourceSkeleton = (bvhResult.skeleton && bvhResult.skeleton.bones === bonesArray) ? bvhResult.skeleton : null;
-  if (!sourceSkeleton) sourceSkeleton = new THREE.Skeleton(bonesArray);
+  // 2) 包裝成 THREE.Skeleton
+  const sourceSkeleton = (bvhResult.skeleton && bvhResult.skeleton.bones === bonesArray)
+    ? bvhResult.skeleton
+    : new THREE.Skeleton(bonesArray);
 
   // 3) 取動畫並移除 root 位移
   let clip = (bvhResult && bvhResult.clip && typeof bvhResult.clip.clone === 'function') ? bvhResult.clip.clone() : bvhResult.clip;
   if (!clip) throw new Error("BVH 檔案內沒有可用的動畫 clip。");
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position"));
 
-  // 4) 重定向到你的角色骨架
+  // 4) 重定向
   const retargeted = SkeletonUtils.retargetClip(
     targetSkeleton,
     sourceSkeleton,
