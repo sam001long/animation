@@ -270,11 +270,25 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   model.traverse(o=>{ if(o.isSkinnedMesh && !targetMesh){ targetMesh=o; targetSkeleton=o.skeleton; } });
   if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
   model.position.set(0,0,0); scene.add(model);
-  mixer = new THREE.AnimationMixer(model); mixer.timeScale = Number(speed.value);
 
+  // ✅ mixer 綁在 SkinnedMesh
+  mixer = new THREE.AnimationMixer(targetMesh);
+  mixer.timeScale = Number(speed.value);
+
+  // 自帶動畫：自我重定向成 bones[...] 格式
   if(Array.isArray(characterClips) && characterClips.length){
-    characterClips.forEach((clip, idx)=> addAction(clip.clone(), `GLB / ${clip.name || ("Clip"+idx)}`));
-    updateMotionSelect(); const first = actions.keys().next().value;
+    const hipGuess = guessHipName(targetSkeleton);
+    characterClips.forEach((clip, idx)=>{
+      const clean = clip.clone();
+      clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
+      const retargeted = SkeletonUtils.retargetClip(
+        targetMesh, targetSkeleton, clean,
+        { preserveHipPosition:true, useTargetMatrix:true, hip: hipGuess }
+      );
+      addAction(retargeted, `GLB / ${clip.name || ("Clip"+idx)}`);
+    });
+    updateMotionSelect();
+    const first = actions.keys().next().value;
     if(first){ motionSelect.value = first; switchToAction(first, 0.0); }
     setStatus(`角色 OK：已載入 ${characterClips.length} 個內建動作；也可再上傳 BVH/GLB`);
   }else{
@@ -285,7 +299,7 @@ function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上
 
 /* 動作載入 */
 async function loadMultipleMotions(files){
-  const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name)); // 支援 .bvh.txt
+  const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
   const glbFiles = files.filter(f => /\.(glb|gltf)$/i.test(f.name));
   if(bvhFiles.length){ setStatus(`載入 ${bvhFiles.length} 支 BVH…`); for(const f of bvhFiles){ await loadBVHFromFile(f).catch(err=>showError(err.message)); } }
   if(glbFiles.length){ setStatus(`載入 ${glbFiles.length} 個 GLB 動作來源…`); for(const f of glbFiles){ await loadMotionGLB(f).catch(err=>showError(err.message)); } }
@@ -326,7 +340,7 @@ function addRetargetedClip(bvhResult, name){
   const looksLikeCMU = srcNames.includes("LeftCollar") || srcNames.includes("RightCollar");
 
   // 根位移修正：只保留 Hips 的 Y，X/Z 歸零（避免飄移）
-  const srcHipName = looksLikeCMU ? "Hips" : "Hips";
+  const srcHipName = "Hips";
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
   if (hipPos) { const a = hipPos.values; for (let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
@@ -354,7 +368,7 @@ async function loadMotionGLB(file){
     const hipGuess = guessHipName(targetSkeleton);
     gltf.animations.forEach((clip, idx)=>{
       const clean = clip.clone();
-      clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position")); // 來源 GLB 多半已有處理；保守起見去 root 平移
+      clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
       const retargeted = SkeletonUtils.retargetClip(
         targetMesh, sourceSkeleton, clean,
         { preserveHipPosition:true, useTargetMatrix:true, hip: hipGuess }
