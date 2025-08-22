@@ -3,21 +3,16 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH/GLB → 角色重定向（本地 motions + 行動面板）</title>
+<title>Mocap Demo｜BVH/GLB → 角色重定向（CMU 修正＋本地 motions）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
   #app{position:fixed;inset:0}
-
-  /* 浮動面板開關 */
   #togglePanel{
-    position:fixed;left:12px;top:12px;z-index:20;
-    width:44px;height:44px;border-radius:12px;border:1px solid #283044;
-    background:#111523;color:var(--text);font-size:22px;line-height:44px;text-align:center
+    position:fixed;left:12px;top:12px;z-index:20;width:44px;height:44px;border-radius:12px;
+    border:1px solid #283044;background:#111523;color:var(--text);font-size:22px;line-height:44px;text-align:center
   }
   #togglePanel:hover{border-color:#3b4a6b;cursor:pointer}
-
-  /* 控制面板 */
   #ui{
     position:fixed;left:12px;top:64px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
     padding:10px 12px;background:rgba(22,25,34,.92);backdrop-filter:blur(8px);
@@ -36,11 +31,7 @@
     padding:10px 12px;background:#301b1b;color:#ffd7d7;border:1px solid #5f2c2c;border-radius:12px;display:none;white-space:pre-wrap;line-height:1.4
   }
   .badge{padding:2px 8px;border-radius:999px;background:#23283a;color:#b8c1ff;font-size:12px}
-
-  /* 行動：面板可滾動；開關由 JS 控制（手機預設收起） */
-  @media (max-width:640px){
-    #ui{max-height:60vh;overflow:auto}
-  }
+  @media (max-width:640px){ #ui{max-height:60vh;overflow:auto} }
 </style>
 </head>
 <body>
@@ -57,7 +48,6 @@
     <button id="btnLoadSoldier">一鍵用 Soldier</button>
     <span id="status">初始化中…</span>
   </div>
-
   <div class="row" style="width:100%">
     <span class="badge">Step 2</span>
     <label>上傳動作（.bvh 或 .glb）
@@ -65,7 +55,6 @@
     </label>
     <button id="btnLoadSamples">一鍵載入示範動作（Walk/Run/Jump）</button>
   </div>
-
   <div class="row" style="width:100%">
     <label>動作清單
       <select id="motionSelect" style="min-width:260px">
@@ -91,7 +80,7 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* 一鍵模型：多來源備援（自動嘗試到成功） */
+/* 一鍵模型（自動嘗試到成功） */
 const ROBOT_CANDIDATES = [
   "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/RobotExpressive/glTF-Binary/RobotExpressive.glb",
   "https://rawcdn.githack.com/KhronosGroup/glTF-Sample-Models/main/2.0/RobotExpressive/glTF-Binary/RobotExpressive.glb",
@@ -130,7 +119,6 @@ let panelOpen = false;
 init().catch(showFatal);
 
 async function init(){
-  // 面板：桌機預設開、手機預設關；按 H 快捷切換
   panelOpen = matchMedia('(min-width: 641px)').matches;
   setPanel(panelOpen);
   togglePanelBtn.addEventListener('click', ()=> setPanel(!panelOpen));
@@ -186,40 +174,22 @@ async function init(){
     autoCloseOnMobile();
   });
 
-  // 一鍵示範：優先用你 repo 的本地檔 motions/*.bvh
+  // 一鍵示範：優先你的 repo 本地檔 motions/*.bvh
   document.getElementById("btnLoadSamples").addEventListener("click", async ()=>{
     if(!ensureModel()) return;
     setStatus("載入示範動作中…");
-
     const CANDIDATES = {
-      "Walk": [
-        "./motions/walk.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"
-      ],
-      "Run (09_01)": [
-        "./motions/run.bvh",
-        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"
-      ],
-      "Jump": [
-        "./motions/jump.bvh"
-      ]
+      "Walk": ["./motions/walk.bvh","https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"],
+      "Run (09_01)": ["./motions/run.bvh","https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"],
+      "Jump": ["./motions/jump.bvh"]
     };
-
     for (const [name, urls] of Object.entries(CANDIDATES)) {
-      let ok = false, lastErr = null;
-      for (const url of urls) {
-        try { await loadBVHFromURL(url, name); ok = true; break; }
-        catch(e){ lastErr = e; }
-      }
-      if (!ok) showError(`示範動作載入失敗（${name}）：` + (lastErr?.message||lastErr));
+      let ok=false,lastErr=null;
+      for(const url of urls){ try{ await loadBVHFromURL(url, name); ok=true; break; } catch(e){ lastErr=e; } }
+      if(!ok) showError(`示範動作載入失敗（${name}）：`+(lastErr?.message||lastErr));
     }
-
     setStatus(`已載入 ${actions.size} 支動作`);
-    if(actions.size && !currentAction){
-      const first = actions.keys().next().value;
-      motionSelect.value = first;
-      switchToAction(first, 0.0);
-    }
+    if(actions.size && !currentAction){ const first = actions.keys().next().value; motionSelect.value = first; switchToAction(first, 0.0); }
     autoCloseOnMobile();
   });
 
@@ -248,56 +218,40 @@ async function init(){
     autoCloseOnMobile();
   });
 
-  // 點空白處（畫布）在手機自動收起面板
-  document.addEventListener('pointerdown', (ev)=>{
-    if (ev.target === renderer.domElement) autoCloseOnMobile();
-  });
+  // 點畫布在手機自動收起
+  document.addEventListener('pointerdown', (ev)=>{ if (ev.target === renderer.domElement) autoCloseOnMobile(); });
 
   setStatus("請先載入角色（按鈕或上傳 GLB）");
   animate();
 }
 
 /* 面板控制 */
-function setPanel(open){
-  panelOpen = open;
-  document.getElementById('ui').style.display = open ? 'flex' : 'none';
-  togglePanelBtn.textContent = open ? '×' : '☰';
-}
-function autoCloseOnMobile(){
-  if (matchMedia('(max-width: 640px)').matches && panelOpen) setPanel(false);
-}
+function setPanel(open){ panelOpen=open; document.getElementById('ui').style.display=open?'flex':'none'; togglePanelBtn.textContent=open?'×':'☰'; }
+function autoCloseOnMobile(){ if (matchMedia('(max-width: 640px)').matches && panelOpen) setPanel(false); }
 
-function onResize(){
-  camera.aspect = innerWidth/innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-}
+function onResize(){ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); }
 
-/* ---- 角色載入 ---- */
+/* 角色載入 */
 async function loadCharacterLocal(url){
   try{
     setStatus(`載入角色中…（本地）`);
-    const head = await fetch(url, {method:"HEAD"});
-    if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
+    const head = await fetch(url,{method:"HEAD"}); if(!head.ok) throw new Error(`找不到檔案 ${url}（HTTP ${head.status}）`);
     const gltf = await new GLTFLoader().loadAsync(url);
     useLoadedCharacter(gltf.scene, gltf.animations||[]);
   }catch(err){ showError("載入角色失敗："+(err?.message||err)); }
 }
-
-async function loadCharacterFromCandidates(candidates, label){
-  let lastErr = null;
+async function loadCharacterFromCandidates(candidates,label){
+  let lastErr=null;
   for(const url of candidates){
     try{
       setStatus(`載入角色中…（${label}）`);
       const gltf = await new GLTFLoader().loadAsync(url);
       useLoadedCharacter(gltf.scene, gltf.animations||[]);
-      setStatus(`載入 ${label} 成功`);
-      return;
-    }catch(e){ lastErr = e; }
+      setStatus(`載入 ${label} 成功`); return;
+    }catch(e){ lastErr=e; }
   }
-  showError(`載入 ${label} 失敗：` + (lastErr?.message||lastErr));
+  showError(`載入 ${label} 失敗：`+(lastErr?.message||lastErr));
 }
-
 async function loadCharacterFromFile(file){
   try{
     setStatus("解析角色檔…");
@@ -307,116 +261,87 @@ async function loadCharacterFromFile(file){
     useLoadedCharacter(gltf.scene, gltf.animations||[]);
   }catch(err){ showError("上傳角色失敗："+(err?.message||err)); }
 }
-
 function useLoadedCharacter(sceneObj, characterClips=[]){
   if(model){
-    scene.remove(model);
-    mixer?.stopAllAction();
-    for(const a of actions.values()) a.stop();
-    actions.clear();
-    updateMotionSelect();
-    currentAction=null; targetSkeleton=null; targetMesh=null;
+    scene.remove(model); mixer?.stopAllAction(); for(const a of actions.values()) a.stop();
+    actions.clear(); updateMotionSelect(); currentAction=null; targetSkeleton=null; targetMesh=null;
   }
   model = sceneObj;
-  // 找第一個 SkinnedMesh + Skeleton
-  model.traverse(o=>{
-    if(o.isSkinnedMesh && !targetMesh){ targetMesh = o; targetSkeleton = o.skeleton; }
-  });
+  model.traverse(o=>{ if(o.isSkinnedMesh && !targetMesh){ targetMesh=o; targetSkeleton=o.skeleton; } });
   if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
-  model.position.set(0,0,0);
-  scene.add(model);
+  model.position.set(0,0,0); scene.add(model);
+  mixer = new THREE.AnimationMixer(model); mixer.timeScale = Number(speed.value);
 
-  mixer = new THREE.AnimationMixer(model);
-  mixer.timeScale = Number(speed.value);
-
-  // 角色內建的動畫也加進清單（立即可播）
   if(Array.isArray(characterClips) && characterClips.length){
     characterClips.forEach((clip, idx)=> addAction(clip.clone(), `GLB / ${clip.name || ("Clip"+idx)}`));
-    updateMotionSelect();
-    const first = actions.keys().next().value;
+    updateMotionSelect(); const first = actions.keys().next().value;
     if(first){ motionSelect.value = first; switchToAction(first, 0.0); }
     setStatus(`角色 OK：已載入 ${characterClips.length} 個內建動作；也可再上傳 BVH/GLB`);
   }else{
     setStatus("角色 OK：可上傳 .bvh 或 .glb（動作來源），或點『一鍵載入示範動作』");
   }
 }
+function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; } return true; }
 
-function ensureModel(){
-  if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; }
-  return true;
-}
-
-/* ---- 動作載入 ---- */
+/* 動作載入 */
 async function loadMultipleMotions(files){
-  // 支援 iOS 下載成 .bvh.txt 的情況
-  const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
+  const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name)); // 支援 .bvh.txt
   const glbFiles = files.filter(f => /\.(glb|gltf)$/i.test(f.name));
-  if(bvhFiles.length){
-    setStatus(`載入 ${bvhFiles.length} 支 BVH…`);
-    for(const f of bvhFiles){ await loadBVHFromFile(f).catch(err=>showError(err.message)); }
-  }
-  if(glbFiles.length){
-    setStatus(`載入 ${glbFiles.length} 個 GLB 動作來源…`);
-    for(const f of glbFiles){ await loadMotionGLB(f).catch(err=>showError(err.message)); }
-  }
+  if(bvhFiles.length){ setStatus(`載入 ${bvhFiles.length} 支 BVH…`); for(const f of bvhFiles){ await loadBVHFromFile(f).catch(err=>showError(err.message)); } }
+  if(glbFiles.length){ setStatus(`載入 ${glbFiles.length} 個 GLB 動作來源…`); for(const f of glbFiles){ await loadMotionGLB(f).catch(err=>showError(err.message)); } }
   setStatus(`已載入 ${actions.size} 支動作`);
-  if(actions.size && !currentAction){
-    const first = actions.keys().next().value;
-    motionSelect.value = first;
-    switchToAction(first, 0.0);
-  }
+  if(actions.size && !currentAction){ const first = actions.keys().next().value; motionSelect.value = first; switchToAction(first, 0.0); }
 }
+async function loadBVHFromFile(file){ const url = URL.createObjectURL(file); try{ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, file.name.replace(/\.(bvh(\.txt)?)$/i,"")); } finally{ URL.revokeObjectURL(url); } }
+async function loadBVHFromURL(url, displayName){ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh(\.txt)?)$/i,"")); }
 
-async function loadBVHFromFile(file){
-  const url = URL.createObjectURL(file);
-  try{
-    const res = await new BVHLoader().loadAsync(url);
-    addRetargetedClip(res, file.name.replace(/\.(bvh(\.txt)?)$/i,""));
-  }finally{ URL.revokeObjectURL(url); }
-}
-
-async function loadBVHFromURL(url, displayName){
-  const res = await new BVHLoader().loadAsync(url);
-  addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh(\.txt)?)$/i,""));
-}
-
-/* ---- BVH → 角色骨架（retargetClip 的 target 要傳 SkinnedMesh/物件） ---- */
+/* ---- 核心：BVH → 角色（CMU 名稱對照＋根位移修正） ---- */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton || !targetMesh) { showError("請先載入角色再載入動作"); return; }
   if (!bvhResult || typeof bvhResult !== 'object') { showError(`BVH 解析結果異常：${bvhResult}`); return; }
 
-  // 取得 BVH 的 bones
-  let bonesArray = null;
-  const r = bvhResult;
-  if (r.skeleton?.bones?.length) bonesArray = r.skeleton.bones;
-  else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray = r.skeletonHelper.skeleton.bones;
-  else if (r.skeletonHelper?.bones?.length) bonesArray = r.skeletonHelper.bones;
-  else if (Array.isArray(r.bones) && r.bones.length) bonesArray = r.bones;
-  else if (r.restPose?.bones?.length) bonesArray = r.restPose.bones;
+  // 來源 Skeleton
+  let bonesArray=null; const r=bvhResult;
+  if (r.skeleton?.bones?.length) bonesArray=r.skeleton.bones;
+  else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray=r.skeletonHelper.skeleton.bones;
+  else if (r.skeletonHelper?.bones?.length) bonesArray=r.skeletonHelper.bones;
+  else if (Array.isArray(r.bones) && r.bones.length) bonesArray=r.bones;
+  else if (r.restPose?.bones?.length) bonesArray=r.restPose.bones;
+  if(!bonesArray){ showError(`這支 BVH 未解析到骨架，已跳過：${name}`); return; }
+  const sourceSkeleton = (r.skeleton && r.skeleton.bones === bonesArray) ? r.skeleton : new THREE.Skeleton(bonesArray);
 
-  if (!bonesArray) { showError(`這支 BVH 未解析到骨架，已跳過：${name}`); return; }
-
-  const sourceSkeleton = (r.skeleton && r.skeleton.bones === bonesArray)
-    ? r.skeleton
-    : new THREE.Skeleton(bonesArray);
-
-  // 取動畫並移除 root 位移（避免被拖著走）
+  // 取得動畫 clip
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
-  clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position"));
+
+  // CMU 名稱對照（target → source）
+  const MAP_CMU = {
+    "Hips":"Hips", "Spine":"LowerBack","Spine1":"Spine","Spine2":"Spine1","Neck":"Neck","Head":"Head",
+    "LeftShoulder":"LeftCollar","LeftArm":"LeftShoulder","LeftForeArm":"LeftElbow","LeftHand":"LeftWrist",
+    "RightShoulder":"RightCollar","RightArm":"RightShoulder","RightForeArm":"RightElbow","RightHand":"RightWrist",
+    "LeftUpLeg":"LeftUpLeg","LeftLeg":"LeftLeg","LeftFoot":"LeftFoot","LeftToeBase":"LeftToe",
+    "RightUpLeg":"RightUpLeg","RightLeg":"RightLeg","RightFoot":"RightFoot","RightToeBase":"RightToe"
+  };
+  const srcNames = sourceSkeleton.bones.map(b=>b.name);
+  const looksLikeCMU = srcNames.includes("LeftCollar") || srcNames.includes("RightCollar");
+
+  // 根位移修正：只保留 Hips 的 Y，X/Z 歸零（避免飄移）
+  const srcHipName = looksLikeCMU ? "Hips" : "Hips";
+  clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
+  const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
+  if (hipPos) { const a = hipPos.values; for (let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
 
   const hipGuess = guessHipName(targetSkeleton);
+
   try{
     const retargeted = SkeletonUtils.retargetClip(
-      targetMesh,                // ✅ 要傳 SkinnedMesh/物件
-      sourceSkeleton,            //    BVH Skeleton
+      targetMesh,
+      sourceSkeleton,
       clip,
-      { preserveHipPosition:true, useTargetMatrix:true, hip: hipGuess }
+      { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: looksLikeCMU ? MAP_CMU : undefined }
     );
     addAction(retargeted, name);
-  }catch(e){
-    showError(`重定向失敗（${name}）：` + (e?.message||e));
-  }
+  }catch(e){ showError(`重定向失敗（${name}）：` + (e?.message||e)); }
 }
 
 /* 從 GLB 動作來源重定向到目前角色 */
@@ -424,15 +349,12 @@ async function loadMotionGLB(file){
   const url = URL.createObjectURL(file);
   try{
     const gltf = await new GLTFLoader().loadAsync(url);
-    let sourceSkeleton = null;
-    gltf.scene.traverse(o=>{ if(o.isSkinnedMesh && !sourceSkeleton){ sourceSkeleton = o.skeleton; }});
-    if(!sourceSkeleton || !gltf.animations?.length){
-      throw new Error(`GLB 無可用骨架/動畫：${file.name}`);
-    }
+    let sourceSkeleton=null; gltf.scene.traverse(o=>{ if(o.isSkinnedMesh && !sourceSkeleton){ sourceSkeleton=o.skeleton; }});
+    if(!sourceSkeleton || !gltf.animations?.length){ throw new Error(`GLB 無可用骨架/動畫：${file.name}`); }
     const hipGuess = guessHipName(targetSkeleton);
     gltf.animations.forEach((clip, idx)=>{
       const clean = clip.clone();
-      clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
+      clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position")); // 來源 GLB 多半已有處理；保守起見去 root 平移
       const retargeted = SkeletonUtils.retargetClip(
         targetMesh, sourceSkeleton, clean,
         { preserveHipPosition:true, useTargetMatrix:true, hip: hipGuess }
@@ -458,64 +380,33 @@ function addAction(clip, name){
   action.enabled = true;
   action.setLoop(loopChk.checked?THREE.LoopRepeat:THREE.LoopOnce, Infinity);
   action.clampWhenFinished = !loopChk.checked;
-  action.time = 0;
-  action.paused = false;
-  actions.set(name, action);
-  updateMotionSelect();
+  action.time = 0; action.paused = false;
+  actions.set(name, action); updateMotionSelect();
 }
-
 function updateMotionSelect(){
   motionSelect.innerHTML = "";
   if(!actions.size){
-    const opt = document.createElement("option");
-    opt.disabled = true; opt.selected = true; opt.textContent="（尚未載入動作）";
-    motionSelect.appendChild(opt);
-    return;
+    const opt = document.createElement("option"); opt.disabled=true; opt.selected=true; opt.textContent="（尚未載入動作）";
+    motionSelect.appendChild(opt); return;
   }
   for(const name of actions.keys()){
-    const opt = document.createElement("option");
-    opt.value = name; opt.textContent = name;
-    motionSelect.appendChild(opt);
+    const opt = document.createElement("option"); opt.value=name; opt.textContent=name; motionSelect.appendChild(opt);
   }
 }
-
 function switchToAction(name, fade=0.35){
-  const next = actions.get(name);
-  if(!next){ showError("找不到動作："+name); return; }
-  if(currentAction && currentAction !== next){
-    currentAction.crossFadeTo(next.reset().play(), fade, true);
-  }else{
-    next.reset().play();
-  }
-  currentAction = next;
-  setStatus(`播放：${name}`);
+  const next = actions.get(name); if(!next){ showError("找不到動作："+name); return; }
+  if(currentAction && currentAction!==next){ currentAction.crossFadeTo(next.reset().play(), fade, true); }
+  else{ next.reset().play(); }
+  currentAction = next; setStatus(`播放：${name}`);
 }
 
 /* 其他 */
 function setStatus(msg){ statusEl.textContent = msg; }
-
-function animate(){
-  requestAnimationFrame(animate);
-  const dt = clock.getDelta();
-  mixer?.update(dt);
-  renderer.render(scene, camera);
-}
-
-/* 錯誤顯示 */
-function showError(msg){
-  console.error(msg);
-  statusEl.textContent = "⚠️ " + msg;
-  errorToast.textContent = "⚠️ " + msg;
-  errorToast.style.display = "block";
-}
-function showFatal(err){
-  console.error(err);
-  errorToast.textContent = "🚫 初始化失敗：\n" + (err?.message || err);
-  errorToast.style.display = "block";
-  statusEl.textContent = "🚫 初始化失敗";
-}
-window.addEventListener("error", (e)=> showError("腳本錯誤："+ (e?.message||"unknown")));
-window.addEventListener("unhandledrejection", (e)=> showError("Promise 錯誤："+ (e?.reason?.message || e?.reason || "unknown")));
+function animate(){ requestAnimationFrame(animate); const dt = clock.getDelta(); mixer?.update(dt); renderer.render(scene, camera); }
+function showError(msg){ console.error(msg); statusEl.textContent="⚠️ "+msg; errorToast.textContent="⚠️ "+msg; errorToast.style.display="block"; }
+function showFatal(err){ console.error(err); errorToast.textContent="🚫 初始化失敗：\n"+(err?.message||err); errorToast.style.display="block"; statusEl.textContent="🚫 初始化失敗"; }
+window.addEventListener("error",(e)=>showError("腳本錯誤："+(e?.message||"unknown")));
+window.addEventListener("unhandledrejection",(e)=>showError("Promise 錯誤："+(e?.reason?.message||e?.reason||"unknown")));
 </script>
 
 <noscript>需要啟用 JavaScript 才能運行此 Demo。</noscript>
