@@ -74,7 +74,7 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* Soldier 多來源（避免 403/404） */
+/* Soldier 候選來源（避免 403/404） */
 const SOLDIER_CANDIDATES = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
@@ -100,12 +100,12 @@ const togglePanelBtn = document.getElementById("togglePanel");
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
 let mixerBones, mixerNodes;
-const actions = new Map();                  // name -> { action, mixer:'bones'|'nodes'|'live' }
+const actions = new Map();
 let current = null;
 let panelOpen = false;
 
 /* Live 驅動器 */
-const liveDrivers = new Map();              // name -> { mixer, action, helper, hip, names }
+const liveDrivers = new Map();  // name -> { mixer, action, helper, hip, names }
 let activeLive = null;
 
 /* 初始化 */
@@ -280,11 +280,23 @@ async function loadCharacterFromFile(file){
 
 /* 對齊骨架：scale=1，更新矩陣（避免扭轉） */
 function normalizeSkeletonScales(meshOrScene){
-  let count=0;
   (meshOrScene.traverse||(()=>{})).call(meshOrScene,(o)=>{
-    if(o.isBone){ o.scale.set(1,1,1); o.updateMatrix(); o.updateMatrixWorld(true); count++; }
+    if(o.isBone){ o.scale.set(1,1,1); o.updateMatrix(); o.updateMatrixWorld(true); }
   });
-  return count;
+}
+
+/* 找到「最合理的 hip 名稱」；找不到就回傳第一顆骨頭名 */
+function findSourceHipName(bones){
+  const cand = bones.find(b=>/^(hips?|pelvis|root)$/i.test(b.name)) ||
+               bones.find(b=>/hip/i.test(b.name)) ||
+               bones[0];
+  return cand ? cand.name : 'Hips';
+}
+/* 由某一顆骨往上走到骨架層級的 root（父層為 Scene） */
+function climbToRigRoot(bone){
+  let r = bone;
+  while (r.parent && r.parent.type !== 'Scene') r = r.parent;
+  return r;
 }
 
 function useLoadedCharacter(sceneObj, characterClips=[]){
@@ -318,7 +330,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   mixerNodes = new THREE.AnimationMixer(model);
   const v = Number(speed.value); mixerBones.timeScale=v; mixerNodes.timeScale=v;
 
-  // 角色自帶動畫：按軌道型態分配 mixer（不做自我 retarget）
+  // 角色自帶動畫：按軌道型態分配 mixer
   if(Array.isArray(characterClips) && characterClips.length){
     characterClips.forEach((clip, idx)=>{
       const name = `GLB / ${clip.name || ("Clip"+idx)}`;
@@ -378,7 +390,7 @@ function buildAutoNameMap(targetSkel, sourceSkel){
   return map;
 }
 
-/* 建立 Live 所需物件：骨架 root + SkeletonHelper(含 skeleton) */
+/* 建立 Live 所需：一定找到 hip 並把 Mixer 綁在含 hip 的樹上 */
 function makeLiveSource(res){
   const bonesArray =
       (res?.skeleton?.bones && res.skeleton.bones.length ? res.skeleton.bones : null) ||
@@ -387,14 +399,15 @@ function makeLiveSource(res){
       (res?.restPose?.bones && res.restPose.bones.length ? res.restPose.bones : null);
   if (!bonesArray) return null;
 
-  let boneRoot = bonesArray[0];
-  while (boneRoot.parent && boneRoot.parent.type !== 'Scene') boneRoot = boneRoot.parent;
+  const hipName = findSourceHipName(bonesArray);
+  const hipBone = bonesArray.find(b=>b.name===hipName) || bonesArray[0];
+  const boneRoot = climbToRigRoot(hipBone);
 
   const sourceSkeleton = res.skeleton || new THREE.Skeleton(bonesArray);
   const helper = res.skeletonHelper || new THREE.SkeletonHelper(boneRoot);
   helper.skeleton = sourceSkeleton; // 讓 helper 有 .skeleton.bones
 
-  return { boneRoot, helper, skeleton: sourceSkeleton };
+  return { boneRoot, helper, skeleton: sourceSkeleton, hipName };
 }
 
 /* 載入多個動作 */
@@ -428,8 +441,8 @@ function addRetargetedClip(bvhResult, name){
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
 
-  // 只留 Hips 的 Y 平移（避免左右/前後漂移）
-  const srcHipName = "Hips";
+  // 動態找來源 hip 名稱，只保留那一條 position（避免漂移又不會抓不到）
+  const srcHipName = findSourceHipName(bonesArray);
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
   if (hipPos) { const a = hipPos.values; for (let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
@@ -455,7 +468,7 @@ function addRetargetedClip(bvhResult, name){
     addAction(baked, name, 'bones');
   }catch(e){ showError(`Baked 重定向失敗（${name}）：`+(e?.message||e)); }
 
-  /* ---- Live：來源骨架逐幀驅動（使用 helper，避免 reading 'bones'） ---- */
+  /* ---- Live：來源骨架逐幀驅動（一定以 hip 所在樹為根） ---- */
   try{
     const liveSrc = makeLiveSource(bvhResult);
     if (!liveSrc) throw new Error("找不到 BVH 骨架");
@@ -465,7 +478,7 @@ function addRetargetedClip(bvhResult, name){
     liveSrc.helper.visible = false;
     liveSrc.boneRoot.traverse(o => o.visible = false);
 
-    const liveMixer  = new THREE.AnimationMixer(liveSrc.boneRoot); // Mixer 綁在骨架 root
+    const liveMixer  = new THREE.AnimationMixer(liveSrc.boneRoot);
     const liveAction = liveMixer.clipAction(clip.clone());
     liveAction.enabled = true;
     liveAction.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
@@ -479,7 +492,7 @@ function addRetargetedClip(bvhResult, name){
     liveDrivers.set(liveName, {
       mixer: liveMixer,
       action: liveAction,
-      helper: liveSrc.helper,  // 這個有 .skeleton.bones
+      helper: liveSrc.helper,  // retarget 用（含 skeleton.bones）
       hip: hipGuess,
       names: namesMap
     });
@@ -508,7 +521,7 @@ async function loadMotionGLB(file){
   }finally{ URL.revokeObjectURL(url); }
 }
 
-/* 猜 Hips 名稱 */
+/* 猜目標 Hips 名稱 */
 function guessHipName(skel){
   const names = skel.bones.map(b=>b.name);
   const list = ["Hips","mixamorig:Hips","hip","hips","Root","root"];
