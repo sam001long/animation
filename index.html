@@ -62,8 +62,8 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- 手機 Console：網址加 ?debug=1 -->
 <script>
+/* 手機 Console：網址加 ?debug=1 */
 (function(){if(location.search.includes('debug=1')){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/eruda';s.onload=function(){eruda.init();console.log('Eruda ready')};document.head.appendChild(s);}})();
 </script>
 
@@ -74,7 +74,7 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* Soldier 候選來源，避免 403/404 */
+/* 多來源 Soldier（避免 403/404） */
 const SOLDIER_CANDIDATES = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
@@ -99,12 +99,12 @@ const togglePanelBtn = document.getElementById("togglePanel");
 /* State */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
-let mixerBones, mixerNodes;                 // bones 與 nodes 兩組 mixer
+let mixerBones, mixerNodes;
 const actions = new Map();                  // name -> { action, mixer:'bones'|'nodes'|'live' }
 let current = null;
 let panelOpen = false;
 
-/* Live retarget drivers */
+/* Live 驅動器 */
 const liveDrivers = new Map();              // name -> { mixer, action, sourceObj, hip, names }
 let activeLive = null;
 
@@ -278,6 +278,15 @@ async function loadCharacterFromFile(file){
   }catch(err){ showError("上傳角色失敗："+(err?.message||err)); }
 }
 
+/* 對齊骨架：scale=1，更新矩陣（避免扭轉） */
+function normalizeSkeletonScales(meshOrScene){
+  let count=0;
+  (meshOrScene.traverse||(()=>{})).call(meshOrScene,(o)=>{
+    if(o.isBone){ o.scale.set(1,1,1); o.updateMatrix(); o.updateMatrixWorld(true); count++; }
+  });
+  return count;
+}
+
 function useLoadedCharacter(sceneObj, characterClips=[]){
   if(model){
     scene.remove(model);
@@ -298,7 +307,11 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
     }
   });
   if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
-  model.position.set(0,0,0); scene.add(model);
+
+  normalizeSkeletonScales(model);
+  model.position.set(0,0,0);
+  scene.add(model);
+  model.updateMatrixWorld(true);
 
   // 兩個 mixer：bones 與 nodes
   mixerBones = new THREE.AnimationMixer(targetMesh);
@@ -322,51 +335,57 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
 }
 function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; } return true; }
 
-/* ====== 自動骨名對照（針對 CMU/CGSpeed 多命名 + Mixamo 目標） ====== */
+/* ====== 更通用的骨名對照：支援底線/大小寫、忽略 twist/roll/end/ik ====== */
 function buildAutoNameMap(targetSkel, sourceSkel){
-  const tnames = targetSkel.bones.map(b=>b.name);
   const snames = sourceSkel.bones.map(b=>b.name);
-  const pick = (...cands) => cands.find(c => c && snames.some(n => n.toLowerCase() === c.toLowerCase()));
-  const isMixamo = tnames.some(n => n.startsWith('mixamorig:'));
-  const T = (n) => isMixamo ? `mixamorig:${n}` : n;
+  const norm = s => (s||'').toLowerCase().replace(/[^a-z]/g,'');
+  const S = snames.map(n=>({raw:n, key:norm(n)}));
+  function pickToken(...tokens){
+    const toks = tokens.map(norm).filter(Boolean);
+    const bad  = ['twist','roll','helper','end','ik','pole','offset'];
+    let cands = S.filter(s => toks.some(t => s.key.includes(t)));
+    const pri = cands.filter(s => !bad.some(b => s.key.includes(b)));
+    if (pri.length) cands = pri;
+    cands.sort((a,b)=>b.key.length - a.key.length);
+    return cands[0]?.raw || null;
+  }
+  const isMixamo = targetSkel.bones.some(b => b.name.startsWith('mixamorig:'));
+  const T = n => isMixamo ? `mixamorig:${n}` : n;
   const map = {};
-  map[T('Hips')]      = pick('Hips','hip','hipjoint','root');
-  map[T('Spine')]     = pick('Spine','lowerback','abdomen','spine');
-  map[T('Spine1')]    = pick('Spine1','upperback','thorax','chest');
-  map[T('Spine2')]    = pick('Spine2','spine1','chest2');
-  map[T('Neck')]      = pick('Neck','lowerneck','neck');
-  map[T('Head')]      = pick('Head','head');
-  map[T('LeftShoulder')] = pick('LeftShoulder','lclavicle','leftcollar');
-  map[T('LeftArm')]      = pick('LeftArm','lhumerus','leftshoulder');
-  map[T('LeftForeArm')]  = pick('LeftForeArm','lradius','leftelbow','leftforearm');
-  map[T('LeftHand')]     = pick('LeftHand','lwrist','lefthand');
-  map[T('RightShoulder')] = pick('RightShoulder','rclavicle','rightcollar');
-  map[T('RightArm')]      = pick('RightArm','rhumerus','rightshoulder');
-  map[T('RightForeArm')]  = pick('RightForeArm','rradius','rightelbow','rightforearm');
-  map[T('RightHand')]     = pick('RightHand','rwrist','righthand');
-  map[T('LeftUpLeg')]   = pick('LeftUpLeg','lhipjoint','lefthip','leftupleg');
-  map[T('LeftLeg')]     = pick('LeftLeg','lfemur','ltibia','leftleg','leftknee');
-  map[T('LeftFoot')]    = pick('LeftFoot','lfoot');
-  map[T('LeftToeBase')] = pick('LeftToeBase','ltoes','ltoe','lefttoe');
-  map[T('RightUpLeg')]   = pick('RightUpLeg','rhipjoint','righthip','rightupleg');
-  map[T('RightLeg')]     = pick('RightLeg','rfemur','rtibia','rightleg','rightknee');
-  map[T('RightFoot')]    = pick('RightFoot','rfoot');
-  map[T('RightToeBase')] = pick('RightToeBase','rtoes','rtoe','righttoe');
-  for (const k of Object.keys(map)){ if(!map[k]) delete map[k]; }
+  map[T('Hips')] = pickToken('hips','pelvis','root');
+  map[T('Spine')] = pickToken('spine','lowerback','abdomen');
+  map[T('Spine1')] = pickToken('spine1','upperback','thorax','chest');
+  map[T('Spine2')] = pickToken('spine2','chest2');
+  map[T('Neck')] = pickToken('neck','neck1');
+  map[T('Head')] = pickToken('head');
+  map[T('LeftShoulder')] = pickToken('lshoulder','leftshoulder','lclavicle','clavicle_l','shoulder_l');
+  map[T('LeftArm')] = pickToken('lupperarm','leftarm','upperarm_l','arm_l','lshoulder');
+  map[T('LeftForeArm')] = pickToken('llowerarm','leftforearm','lowerarm_l','forearm_l','lelbow');
+  map[T('LeftHand')] = pickToken('lhand','lefthand','hand_l','lwrist');
+  map[T('RightShoulder')] = pickToken('rshoulder','rightshoulder','rclavicle','clavicle_r','shoulder_r');
+  map[T('RightArm')] = pickToken('rupperarm','rightarm','upperarm_r','arm_r','rshoulder');
+  map[T('RightForeArm')] = pickToken('rlowerarm','rightforearm','lowerarm_r','forearm_r','relbow');
+  map[T('RightHand')] = pickToken('rhand','righthand','hand_r','rwrist');
+  map[T('LeftUpLeg')] = pickToken('lthigh','lhip','leftupleg','thigh_l','upleg_l');
+  map[T('LeftLeg')] = pickToken('lcalf','leftleg','calf_l','shin_l','ltibia','lknee');
+  map[T('LeftFoot')] = pickToken('lfoot','foot_l');
+  map[T('LeftToeBase')] = pickToken('ltoe','toebase_l','ball_l','toe_l');
+  map[T('RightUpLeg')] = pickToken('rthigh','rhip','rightupleg','thigh_r','upleg_r');
+  map[T('RightLeg')] = pickToken('rcalf','rightleg','calf_r','shin_r','rfibia','rknee');
+  map[T('RightFoot')] = pickToken('rfoot','foot_r');
+  map[T('RightToeBase')] = pickToken('rtoe','toebase_r','ball_r','toe_r');
+  Object.keys(map).forEach(k => { if(!map[k]) delete map[k]; });
   return map;
 }
 
-/* 取得 BVH 骨架的正確 root（包含 Hips 的那棵層級） */
+/* 取出 BVH 骨架 root（包含 Hips 的那棵層級） */
 function getBVHRootObject(res){
   const bone0 =
     res?.skeleton?.bones?.[0] ||
     res?.skeletonHelper?.skeleton?.bones?.[0] ||
     (Array.isArray(res?.bones) && res.bones[0]) ||
     res?.restPose?.bones?.[0] || null;
-
   if (!bone0) return null;
-
-  // 一直往上找到最接近 Scene 的根
   let root = bone0;
   while (root.parent && root.parent.type !== 'Scene') root = root.parent;
   return root;
@@ -403,7 +422,7 @@ function addRetargetedClip(bvhResult, name){
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
 
-  // 只留 Hips 的 Y 平移（避免飄移）
+  // 只留 Hips 的 Y 平移（避免左右/前後漂移）
   const srcHipName = "Hips";
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
@@ -413,21 +432,27 @@ function addRetargetedClip(bvhResult, name){
   const namesMap = buildAutoNameMap(targetSkeleton, sourceSkeleton);
   const hipGuess = guessHipName(targetSkeleton);
 
-  /* ---- Baked：轉成 target 的 bones[...] clip ---- */
+  /* ---- Baked：轉成 target 的 bones[...] clip（含回退） ---- */
   try{
-    const baked = SkeletonUtils.retargetClip(
-      targetMesh, sourceSkeleton, clip,
-      { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: Object.keys(namesMap).length?namesMap:undefined }
-    );
+    let baked;
+    try{
+      baked = SkeletonUtils.retargetClip(
+        targetMesh, sourceSkeleton, clip,
+        { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: Object.keys(namesMap).length?namesMap:undefined }
+      );
+    }catch(inner){
+      baked = SkeletonUtils.retargetClip(
+        targetMesh, sourceSkeleton, clip,
+        { hip: hipGuess, useTargetMatrix:false, preserveHipPosition:true, names: Object.keys(namesMap).length?namesMap:undefined }
+      );
+    }
     addAction(baked, name, 'bones');
   }catch(e){ showError(`Baked 重定向失敗（${name}）：`+(e?.message||e)); }
 
-  /* ---- Live：用來源骨架逐幀驅動（修正 root 綁定） ---- */
+  /* ---- Live：來源骨架逐幀驅動（修正 root 綁定） ---- */
   try{
     const sourceRoot = getBVHRootObject(bvhResult);
     if (!sourceRoot) throw new Error("找不到 BVH 骨架 root");
-
-    // 確保在場景中（可見性關掉即可）
     if (!sourceRoot.parent) scene.add(sourceRoot);
     sourceRoot.traverse(o => { o.visible = false; });
 
@@ -445,7 +470,7 @@ function addRetargetedClip(bvhResult, name){
     liveDrivers.set(liveName, {
       mixer: liveMixer,
       action: liveAction,
-      sourceObj: sourceRoot,  // 用正確 root 來驅動
+      sourceObj: sourceRoot,
       hip: hipGuess,
       names: namesMap
     });
@@ -485,7 +510,7 @@ function guessHipName(skel){
 
 /* 動作管理 */
 function addAction(clip, name, mixerKind){
-  if(mixerKind==='live'){ updateMotionSelect(); return; } // live 的 entry 已在上面建立
+  if(mixerKind==='live'){ updateMotionSelect(); return; }
   const mixer = mixerKind==='nodes' ? mixerNodes : mixerBones;
   const action = mixer.clipAction(clip);
   action.enabled = true;
@@ -508,8 +533,6 @@ function updateMotionSelect(){
 }
 function switchToAction(name, fade=0.35){
   const next = actions.get(name); if(!next){ showError("找不到動作："+name); return; }
-
-  // 停掉所有既有 action
   for(const ent of actions.values()){ if(ent.mixer!=='live') ent.action.stop(); }
   activeLive = null;
 
@@ -522,12 +545,8 @@ function switchToAction(name, fade=0.35){
   }
 
   if(current){
-    if(current.mixer!==next.mixer){
-      current.action.stop();
-      next.action.reset().play();
-    }else{
-      current.action.crossFadeTo(next.action.reset().play(), fade, true);
-    }
+    if(current.mixer!==next.mixer){ current.action.stop(); next.action.reset().play(); }
+    else{ current.action.crossFadeTo(next.action.reset().play(), fade, true); }
   }else{
     next.action.reset().play();
   }
@@ -543,7 +562,6 @@ function animate(){
   mixerNodes?.update(dt);
   if(activeLive){
     activeLive.mixer.update(dt);
-    // 逐幀把來源骨架 Pose 轉到目標
     SkeletonUtils.retarget(
       targetMesh, activeLive.sourceObj,
       { hip: activeLive.hip, useTargetMatrix:true, preservePosition:false, names: activeLive.names }
