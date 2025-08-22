@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH / GLB → 角色重定向（行動面板＋穩定來源）</title>
+<title>Mocap Demo｜BVH/GLB → 角色重定向（本地 motions + 行動面板）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
   #app{position:fixed;inset:0}
 
-  /* 浮動開關（左上角） */
+  /* 浮動面板開關 */
   #togglePanel{
     position:fixed;left:12px;top:12px;z-index:20;
     width:44px;height:44px;border-radius:12px;border:1px solid #283044;
@@ -17,7 +17,7 @@
   }
   #togglePanel:hover{border-color:#3b4a6b;cursor:pointer}
 
-  /* 面板 */
+  /* 控制面板 */
   #ui{
     position:fixed;left:12px;top:64px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
     padding:10px 12px;background:rgba(22,25,34,.92);backdrop-filter:blur(8px);
@@ -37,7 +37,7 @@
   }
   .badge{padding:2px 8px;border-radius:999px;background:#23283a;color:#b8c1ff;font-size:12px}
 
-  /* 行動：面板可滾動、預設收起（JS 決定開關） */
+  /* 行動：面板可滾動；開關由 JS 控制（手機預設收起） */
   @media (max-width:640px){
     #ui{max-height:60vh;overflow:auto}
   }
@@ -63,7 +63,7 @@
     <label>上傳動作（.bvh 或 .glb）
       <input id="motionInput" type="file" accept=".bvh,.glb,.gltf" multiple/>
     </label>
-    <button id="btnLoadSamples">一鍵載入示範動作（Walk/Run/舞蹈）</button>
+    <button id="btnLoadSamples">一鍵載入示範動作（Walk/Run/Jump）</button>
   </div>
 
   <div class="row" style="width:100%">
@@ -126,11 +126,11 @@ const actions = new Map();
 let currentAction = null;
 let panelOpen = false;
 
-/* Init */
+/* 初始化 */
 init().catch(showFatal);
 
 async function init(){
-  // 面板開關：桌機預設開、手機預設關；按 H 也可切換
+  // 面板：桌機預設開、手機預設關；按 H 快捷切換
   panelOpen = matchMedia('(min-width: 641px)').matches;
   setPanel(panelOpen);
   togglePanelBtn.addEventListener('click', ()=> setPanel(!panelOpen));
@@ -186,27 +186,41 @@ async function init(){
     autoCloseOnMobile();
   });
 
+  // 一鍵示範：優先用你 repo 的本地檔 motions/*.bvh
   document.getElementById("btnLoadSamples").addEventListener("click", async ()=>{
     if(!ensureModel()) return;
-    try{
-      setStatus("載入示範動作中…");
-      const samples = [
-        {name:"Walk (07_01)", url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"},
-        {name:"Run (09_01)",  url:"https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"},
-        {name:"Samba",        url:"https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/SambaDancing.bvh"}
-      ];
-      for (const s of samples) {
-        try { await loadBVHFromURL(s.url, s.name); }
-        catch (e) { showError(`示範動作載入失敗（${s.name}）：` + (e?.message||e)); }
+    setStatus("載入示範動作中…");
+
+    const CANDIDATES = {
+      "Walk": [
+        "./motions/walk.bvh",
+        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh"
+      ],
+      "Run (09_01)": [
+        "./motions/run.bvh",
+        "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh"
+      ],
+      "Jump": [
+        "./motions/jump.bvh"
+      ]
+    };
+
+    for (const [name, urls] of Object.entries(CANDIDATES)) {
+      let ok = false, lastErr = null;
+      for (const url of urls) {
+        try { await loadBVHFromURL(url, name); ok = true; break; }
+        catch(e){ lastErr = e; }
       }
-      setStatus(`已載入 ${actions.size} 支動作`);
-      if(actions.size && !currentAction){
-        const first = actions.keys().next().value;
-        motionSelect.value = first;
-        switchToAction(first, 0.0);
-      }
-      autoCloseOnMobile();
-    }catch(err){ showError("示範動作載入失敗：" + (err?.message||err)); }
+      if (!ok) showError(`示範動作載入失敗（${name}）：` + (lastErr?.message||lastErr));
+    }
+
+    setStatus(`已載入 ${actions.size} 支動作`);
+    if(actions.size && !currentAction){
+      const first = actions.keys().next().value;
+      motionSelect.value = first;
+      switchToAction(first, 0.0);
+    }
+    autoCloseOnMobile();
   });
 
   motionSelect.addEventListener("change", ()=>{
@@ -234,14 +248,16 @@ async function init(){
     autoCloseOnMobile();
   });
 
-  // 點空白處也可在手機自動收起
-  renderer.domElement.addEventListener('pointerdown', ()=> autoCloseOnMobile());
+  // 點空白處（畫布）在手機自動收起面板
+  document.addEventListener('pointerdown', (ev)=>{
+    if (ev.target === renderer.domElement) autoCloseOnMobile();
+  });
 
   setStatus("請先載入角色（按鈕或上傳 GLB）");
   animate();
 }
 
-/* 面板開關 */
+/* 面板控制 */
 function setPanel(open){
   panelOpen = open;
   document.getElementById('ui').style.display = open ? 'flex' : 'none';
@@ -257,7 +273,7 @@ function onResize(){
   renderer.setSize(innerWidth, innerHeight);
 }
 
-/* ---- Loaders ---- */
+/* ---- 角色載入 ---- */
 async function loadCharacterLocal(url){
   try{
     setStatus(`載入角色中…（本地）`);
@@ -302,6 +318,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
     currentAction=null; targetSkeleton=null; targetMesh=null;
   }
   model = sceneObj;
+  // 找第一個 SkinnedMesh + Skeleton
   model.traverse(o=>{
     if(o.isSkinnedMesh && !targetMesh){ targetMesh = o; targetSkeleton = o.skeleton; }
   });
@@ -312,6 +329,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   mixer = new THREE.AnimationMixer(model);
   mixer.timeScale = Number(speed.value);
 
+  // 角色內建的動畫也加進清單（立即可播）
   if(Array.isArray(characterClips) && characterClips.length){
     characterClips.forEach((clip, idx)=> addAction(clip.clone(), `GLB / ${clip.name || ("Clip"+idx)}`));
     updateMotionSelect();
@@ -328,9 +346,11 @@ function ensureModel(){
   return true;
 }
 
+/* ---- 動作載入 ---- */
 async function loadMultipleMotions(files){
-  const bvhFiles = files.filter(f=>f.name.toLowerCase().endsWith(".bvh"));
-  const glbFiles = files.filter(f=>/\.(glb|gltf)$/i.test(f.name));
+  // 支援 iOS 下載成 .bvh.txt 的情況
+  const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
+  const glbFiles = files.filter(f => /\.(glb|gltf)$/i.test(f.name));
   if(bvhFiles.length){
     setStatus(`載入 ${bvhFiles.length} 支 BVH…`);
     for(const f of bvhFiles){ await loadBVHFromFile(f).catch(err=>showError(err.message)); }
@@ -351,21 +371,21 @@ async function loadBVHFromFile(file){
   const url = URL.createObjectURL(file);
   try{
     const res = await new BVHLoader().loadAsync(url);
-    addRetargetedClip(res, file.name.replace(/\.(bvh)$/i,""));
+    addRetargetedClip(res, file.name.replace(/\.(bvh(\.txt)?)$/i,""));
   }finally{ URL.revokeObjectURL(url); }
 }
 
 async function loadBVHFromURL(url, displayName){
   const res = await new BVHLoader().loadAsync(url);
-  addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh)$/i,""));
+  addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh(\.txt)?)$/i,""));
 }
 
-/* ---- BVH → 角色骨架（正確傳 SkinnedMesh 當 target） ---- */
+/* ---- BVH → 角色骨架（retargetClip 的 target 要傳 SkinnedMesh/物件） ---- */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton || !targetMesh) { showError("請先載入角色再載入動作"); return; }
   if (!bvhResult || typeof bvhResult !== 'object') { showError(`BVH 解析結果異常：${bvhResult}`); return; }
 
-  // 取得 BVH 的 Skeleton
+  // 取得 BVH 的 bones
   let bonesArray = null;
   const r = bvhResult;
   if (r.skeleton?.bones?.length) bonesArray = r.skeleton.bones;
@@ -388,7 +408,7 @@ function addRetargetedClip(bvhResult, name){
   const hipGuess = guessHipName(targetSkeleton);
   try{
     const retargeted = SkeletonUtils.retargetClip(
-      targetMesh,                // ✅ SkinnedMesh/物件
+      targetMesh,                // ✅ 要傳 SkinnedMesh/物件
       sourceSkeleton,            //    BVH Skeleton
       clip,
       { preserveHipPosition:true, useTargetMatrix:true, hip: hipGuess }
@@ -432,6 +452,7 @@ function guessHipName(skel){
   return hit || "Hips";
 }
 
+/* 動作管理 */
 function addAction(clip, name){
   const action = mixer.clipAction(clip);
   action.enabled = true;
@@ -470,6 +491,7 @@ function switchToAction(name, fade=0.35){
   setStatus(`播放：${name}`);
 }
 
+/* 其他 */
 function setStatus(msg){ statusEl.textContent = msg; }
 
 function animate(){
