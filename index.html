@@ -108,6 +108,9 @@ let panelOpen = false;
 const liveDrivers = new Map();  // name -> { mixer, action, helper, hip, names }
 let activeLive = null;
 
+/* 綁定姿勢快照（避免 Live 變形） */
+let bindPose = null;
+
 /* 初始化 */
 init().catch(showFatal);
 
@@ -278,11 +281,25 @@ async function loadCharacterFromFile(file){
   }catch(err){ showError("上傳角色失敗："+(err?.message||err)); }
 }
 
-/* 對齊骨架：scale=1，更新矩陣（避免扭轉） */
-function normalizeSkeletonScales(meshOrScene){
-  (meshOrScene.traverse||(()=>{})).call(meshOrScene,(o)=>{
-    if(o.isBone){ o.scale.set(1,1,1); o.updateMatrix(); o.updateMatrixWorld(true); }
-  });
+/* ===== 綁定姿勢快照/還原（避免 Live 變形） ===== */
+function captureBindPose(){
+  if(!targetSkeleton) return;
+  bindPose = targetSkeleton.bones.map(b=>({
+    bone: b,
+    p: b.position.clone(),
+    q: b.quaternion.clone(),
+    s: b.scale.clone()
+  }));
+}
+function restoreBindPose(){
+  if(!bindPose) return;
+  for(const t of bindPose){
+    t.bone.position.copy(t.p);
+    t.bone.quaternion.copy(t.q);
+    t.bone.scale.copy(t.s);
+    t.bone.updateMatrix();
+    t.bone.updateMatrixWorld(true);
+  }
 }
 
 /* 找到「最合理的 hip 名稱」；找不到就回傳第一顆骨頭名 */
@@ -304,7 +321,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
     scene.remove(model);
     for(const {action} of actions.values()) action.stop();
     actions.clear(); updateMotionSelect(); current=null; targetSkeleton=null; targetMesh=null;
-    liveDrivers.clear(); activeLive=null;
+    liveDrivers.clear(); activeLive=null; bindPose=null;
   }
   model = sceneObj;
 
@@ -320,10 +337,13 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   });
   if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
 
-  normalizeSkeletonScales(model);
+  // 不再強制把目標角色骨頭 scale 設為 1，避免變形
   model.position.set(0,0,0);
   scene.add(model);
   model.updateMatrixWorld(true);
+
+  // 快照綁定姿勢
+  captureBindPose();
 
   // 兩個 mixer：bones 與 nodes
   mixerBones = new THREE.AnimationMixer(targetMesh);
@@ -582,13 +602,17 @@ function animate(){
   const dt = clock.getDelta();
   mixerBones?.update(dt);
   mixerNodes?.update(dt);
+
   if(activeLive){
     activeLive.mixer.update(dt);
+    // 每幀先把角色還原到綁定姿勢，避免 Live 疊加造成變形
+    restoreBindPose();
     SkeletonUtils.retarget(
-      targetMesh, activeLive.helper,  // 用 helper（含 skeleton.bones）
-      { hip: activeLive.hip, useTargetMatrix:true, preservePosition:false, names: activeLive.names }
+      targetMesh, activeLive.helper,
+      { hip: activeLive.hip, useTargetMatrix:true, preservePosition:true, names: activeLive.names }
     );
   }
+
   renderer.render(scene, camera);
 }
 function showError(msg){ console.error(msg); statusEl.textContent="⚠️ "+msg; errorToast.textContent="⚠️ "+msg; errorToast.style.display="block"; }
