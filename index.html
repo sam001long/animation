@@ -74,6 +74,7 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
+/* Soldier 候選來源，避免 403/404 */
 const SOLDIER_CANDIDATES = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
@@ -98,13 +99,13 @@ const togglePanelBtn = document.getElementById("togglePanel");
 /* State */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
-let mixerBones, mixerNodes;
-const actions = new Map(); // name -> { action, mixer:'bones'|'nodes'|'live' }
+let mixerBones, mixerNodes;                 // bones 與 nodes 兩組 mixer
+const actions = new Map();                  // name -> { action, mixer:'bones'|'nodes'|'live' }
 let current = null;
 let panelOpen = false;
 
 /* Live retarget drivers */
-const liveDrivers = new Map();  // name -> { mixer, action, sourceObj, hip, names }
+const liveDrivers = new Map();              // name -> { mixer, action, sourceObj, hip, names }
 let activeLive = null;
 
 /* 初始化 */
@@ -355,6 +356,22 @@ function buildAutoNameMap(targetSkel, sourceSkel){
   return map;
 }
 
+/* 取得 BVH 骨架的正確 root（包含 Hips 的那棵層級） */
+function getBVHRootObject(res){
+  const bone0 =
+    res?.skeleton?.bones?.[0] ||
+    res?.skeletonHelper?.skeleton?.bones?.[0] ||
+    (Array.isArray(res?.bones) && res.bones[0]) ||
+    res?.restPose?.bones?.[0] || null;
+
+  if (!bone0) return null;
+
+  // 一直往上找到最接近 Scene 的根
+  let root = bone0;
+  while (root.parent && root.parent.type !== 'Scene') root = root.parent;
+  return root;
+}
+
 /* 載入多個動作 */
 async function loadMultipleMotions(files){
   const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
@@ -367,7 +384,7 @@ async function loadMultipleMotions(files){
 async function loadBVHFromFile(file){ const url = URL.createObjectURL(file); try{ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, file.name.replace(/\.(bvh(\.txt)?)$/i,"")); } finally{ URL.revokeObjectURL(url); } }
 async function loadBVHFromURL(url, displayName){ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh(\.txt)?)$/i,"")); }
 
-/* BVH → 加入 Baked 與 Live 兩種播放 */
+/* BVH → 同時建立 Baked 與 Live 兩個版本 */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton || !targetMesh) { showError("請先載入角色再載入動作"); return; }
   if (!bvhResult || typeof bvhResult !== 'object') { showError(`BVH 解析結果異常：${bvhResult}`); return; }
@@ -386,7 +403,7 @@ function addRetargetedClip(bvhResult, name){
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
 
-  // 只留 Hips 的 Y 平移
+  // 只留 Hips 的 Y 平移（避免飄移）
   const srcHipName = "Hips";
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
@@ -405,33 +422,33 @@ function addRetargetedClip(bvhResult, name){
     addAction(baked, name, 'bones');
   }catch(e){ showError(`Baked 重定向失敗（${name}）：`+(e?.message||e)); }
 
-  /* ---- Live：用來源骨架逐幀驅動 ---- */
+  /* ---- Live：用來源骨架逐幀驅動（修正 root 綁定） ---- */
   try{
-    // 來源物件（優先用 skeletonHelper，有 skeleton 屬性、便於動畫）
-    const sourceObj = r.skeletonHelper || (()=>{
-      const root = new THREE.Object3D();
-      // 將 bones 連成層級（BVHLoader 已建好，通常 bones[0] 的 parent 就是根）
-      if (bonesArray[0]?.parent) root.add(bonesArray[0].parent);
-      return root;
-    })();
+    const sourceRoot = getBVHRootObject(bvhResult);
+    if (!sourceRoot) throw new Error("找不到 BVH 骨架 root");
 
-    // 放到場景但隱藏（仍可被 mixer 驅動）
-    if (!sourceObj.parent) scene.add(sourceObj);
-    sourceObj.visible = false;
+    // 確保在場景中（可見性關掉即可）
+    if (!sourceRoot.parent) scene.add(sourceRoot);
+    sourceRoot.traverse(o => { o.visible = false; });
 
-    const liveMixer = new THREE.AnimationMixer(sourceObj);
+    const liveMixer  = new THREE.AnimationMixer(sourceRoot);
     const liveAction = liveMixer.clipAction(clip.clone());
     liveAction.enabled = true;
     liveAction.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
     liveAction.clampWhenFinished = !loopChk.checked;
     liveAction.time = 0; liveAction.paused = false;
 
-    const v = Number(speed.value);
-    liveMixer.timeScale = v;
+    liveMixer.timeScale = Number(speed.value);
 
     const liveName = `${name} (Live)`;
     actions.set(liveName, { action: liveAction, mixer:'live' });
-    liveDrivers.set(liveName, { mixer: liveMixer, action: liveAction, sourceObj, hip: hipGuess, names: namesMap });
+    liveDrivers.set(liveName, {
+      mixer: liveMixer,
+      action: liveAction,
+      sourceObj: sourceRoot,  // 用正確 root 來驅動
+      hip: hipGuess,
+      names: namesMap
+    });
     updateMotionSelect();
   }catch(e){ showError(`Live 重定向建立失敗（${name}）：`+(e?.message||e)); }
 }
@@ -468,9 +485,7 @@ function guessHipName(skel){
 
 /* 動作管理 */
 function addAction(clip, name, mixerKind){
-  if(mixerKind==='live'){ // live 的 entry 由 addRetargetedClip 另外處理
-    updateMotionSelect(); return;
-  }
+  if(mixerKind==='live'){ updateMotionSelect(); return; } // live 的 entry 已在上面建立
   const mixer = mixerKind==='nodes' ? mixerNodes : mixerBones;
   const action = mixer.clipAction(clip);
   action.enabled = true;
