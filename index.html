@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH/GLB → 角色重定向（雙 Mixer，Robot 已移除）</title>
+<title>Mocap Demo｜BVH/GLB → 角色重定向（雙 Mixer＋CMU 對照）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -178,7 +178,7 @@ async function init(){
     for (const [name, urls] of Object.entries(CANDIDATES)) {
       let ok=false,lastErr=null;
       for(const url of urls){ try{ await loadBVHFromURL(url, name); ok=true; break; } catch(e){ lastErr=e; } }
-      if(!ok) showError(`示範動作載入失敗（${name}）：`+(lastErr?.message||lastErr));
+      if(!ok) showError(`示範動作載入失敗（${name}）：`+(lastErr?.message||最後Err));
     }
     setStatus(`已載入 ${actions.size} 支動作`);
     if(actions.size && !current){ const first = actions.keys().next().value; motionSelect.value = first; switchToAction(first, 0.0); }
@@ -223,7 +223,7 @@ function autoCloseOnMobile(){ if (matchMedia('(max-width: 640px)').matches && pa
 /* 視窗 */
 function onResize(){ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); }
 
-/* 角色載入（若找不到 ./character.glb，自動 fallback 到 Soldier） */
+/* 若找不到 ./character.glb，自動 fallback 到 Soldier */
 async function loadCharacterLocal(url){
   try{
     setStatus(`載入角色中…（本地）`);
@@ -303,6 +303,30 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
 }
 function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; } return true; }
 
+/* 依「目標骨架」產生 CMU→目標 的骨名對照表 */
+function buildCMUNameMapForTarget(targetSkel){
+  const tnames = targetSkel.bones.map(b=>b.name);
+  const isMixamo = tnames.some(n => n.startsWith('mixamorig:')); // Soldier / Mixamo
+
+  if (isMixamo){
+    return {
+      "mixamorig:Hips":"Hips","mixamorig:Spine":"LowerBack","mixamorig:Spine1":"Spine","mixamorig:Spine2":"Spine1",
+      "mixamorig:Neck":"Neck","mixamorig:Head":"Head",
+      "mixamorig:LeftShoulder":"LeftCollar","mixamorig:LeftArm":"LeftShoulder","mixamorig:LeftForeArm":"LeftElbow","mixamorig:LeftHand":"LeftWrist",
+      "mixamorig:RightShoulder":"RightCollar","mixamorig:RightArm":"RightShoulder","mixamorig:RightForeArm":"RightElbow","mixamorig:RightHand":"RightWrist",
+      "mixamorig:LeftUpLeg":"LeftUpLeg","mixamorig:LeftLeg":"LeftLeg","mixamorig:LeftFoot":"LeftFoot","mixamorig:LeftToeBase":"LeftToe",
+      "mixamorig:RightUpLeg":"RightUpLeg","mixamorig:RightLeg":"RightLeg","mixamorig:RightFoot":"RightFoot","mixamorig:RightToeBase":"RightToe"
+    };
+  }
+  return { // 目標一般 glTF 命名（Hips/Spine…）
+    "Hips":"Hips","Spine":"LowerBack","Spine1":"Spine","Spine2":"Spine1","Neck":"Neck","Head":"Head",
+    "LeftShoulder":"LeftCollar","LeftArm":"LeftShoulder","LeftForeArm":"LeftElbow","LeftHand":"LeftWrist",
+    "RightShoulder":"RightCollar","RightArm":"RightShoulder","RightForeArm":"RightElbow","RightHand":"RightWrist",
+    "LeftUpLeg":"LeftUpLeg","LeftLeg":"LeftLeg","LeftFoot":"LeftFoot","LeftToeBase":"LeftToe",
+    "RightUpLeg":"RightUpLeg","RightLeg":"RightLeg","RightFoot":"RightFoot","RightToeBase":"RightToe"
+  };
+}
+
 /* 載入多個動作 */
 async function loadMultipleMotions(files){
   const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
@@ -320,6 +344,7 @@ function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton || !targetMesh) { showError("請先載入角色再載入動作"); return; }
   if (!bvhResult || typeof bvhResult !== 'object') { showError(`BVH 解析結果異常：${bvhResult}`); return; }
 
+  // 來源骨架
   let bonesArray=null; const r=bvhResult;
   if (r.skeleton?.bones?.length) bonesArray=r.skeleton.bones;
   else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray=r.skeletonHelper.skeleton.bones;
@@ -329,6 +354,7 @@ function addRetargetedClip(bvhResult, name){
   if(!bonesArray){ showError(`這支 BVH 未解析到骨架，已跳過：${name}`); return; }
   const sourceSkeleton = (r.skeleton && r.skeleton.bones === bonesArray) ? r.skeleton : new THREE.Skeleton(bonesArray);
 
+  // clip
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
 
@@ -338,23 +364,17 @@ function addRetargetedClip(bvhResult, name){
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
   if (hipPos) { const a = hipPos.values; for (let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
 
-  // CMU 對照
-  const MAP_CMU = {
-    "Hips":"Hips","Spine":"LowerBack","Spine1":"Spine","Spine2":"Spine1","Neck":"Neck","Head":"Head",
-    "LeftShoulder":"LeftCollar","LeftArm":"LeftShoulder","LeftForeArm":"LeftElbow","LeftHand":"LeftWrist",
-    "RightShoulder":"RightCollar","RightArm":"RightShoulder","RightForeArm":"RightElbow","RightHand":"RightWrist",
-    "LeftUpLeg":"LeftUpLeg","LeftLeg":"LeftLeg","LeftFoot":"LeftFoot","LeftToeBase":"LeftToe",
-    "RightUpLeg":"RightUpLeg","RightLeg":"RightLeg","RightFoot":"RightFoot","RightToeBase":"RightToe"
-  };
+  // 判別是否 CMU，建立對照表
   const srcNames = (sourceSkeleton.bones||[]).map(b=>b.name);
   const looksLikeCMU = srcNames.includes("LeftCollar") || srcNames.includes("RightCollar");
+  const namesMap = looksLikeCMU ? buildCMUNameMapForTarget(targetSkeleton) : undefined;
 
   const hipGuess = guessHipName(targetSkeleton);
 
   try{
     const retargeted = SkeletonUtils.retargetClip(
       targetMesh, sourceSkeleton, clip,
-      { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: looksLikeCMU ? MAP_CMU : undefined }
+      { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: namesMap }
     );
     addAction(retargeted, name, 'bones');
   }catch(e){ showError(`重定向失敗（${name}）：` + (e?.message||e)); }
