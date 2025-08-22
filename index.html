@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH/GLB → 角色重定向</title>
+<title>Mocap Demo｜BVH/GLB → 角色重定向（Baked + Live）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -62,7 +62,7 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
-<!-- 行動版 Console：網址加 ?debug=1 啟用 -->
+<!-- 手機 Console：網址加 ?debug=1 -->
 <script>
 (function(){if(location.search.includes('debug=1')){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/eruda';s.onload=function(){eruda.init();console.log('Eruda ready')};document.head.appendChild(s);}})();
 </script>
@@ -79,6 +79,7 @@ const SOLDIER_CANDIDATES = [
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
 ];
 
+/* DOM */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -94,13 +95,19 @@ const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 const togglePanelBtn = document.getElementById("togglePanel");
 
+/* State */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
 let mixerBones, mixerNodes;
-const actions = new Map();    // name -> { action, mixer:'bones'|'nodes' }
+const actions = new Map(); // name -> { action, mixer:'bones'|'nodes'|'live' }
 let current = null;
 let panelOpen = false;
 
+/* Live retarget drivers */
+const liveDrivers = new Map();  // name -> { mixer, action, sourceObj, hip, names }
+let activeLive = null;
+
+/* 初始化 */
 init().catch(showFatal);
 
 async function init(){
@@ -181,13 +188,32 @@ async function init(){
     switchToAction(name, 0.35);
     autoCloseOnMobile();
   });
-  playBtn.addEventListener("click", ()=>{ current?.action?.play(); if(current) current.action.paused=false; setStatus("播放"); autoCloseOnMobile(); });
-  pauseBtn.addEventListener("click", ()=>{ if(current){ current.action.paused = true; setStatus("暫停"); }});
-  speed.addEventListener("input", ()=>{ const v=Number(speed.value); if(mixerBones) mixerBones.timeScale=v; if(mixerNodes) mixerNodes.timeScale=v; });
+  playBtn.addEventListener("click", ()=>{
+    if(current?.mixer==='live'){ activeLive?.action && (activeLive.action.paused=false); }
+    else { current?.action?.play(); if(current) current.action.paused=false; }
+    setStatus("播放"); autoCloseOnMobile();
+  });
+  pauseBtn.addEventListener("click", ()=>{
+    if(current?.mixer==='live'){ activeLive?.action && (activeLive.action.paused=true); }
+    else if(current){ current.action.paused = true; }
+    setStatus("暫停");
+  });
+  speed.addEventListener("input", ()=>{
+    const v=Number(speed.value);
+    mixerBones && (mixerBones.timeScale=v);
+    mixerNodes && (mixerNodes.timeScale=v);
+    if(activeLive) activeLive.mixer.timeScale = v;
+  });
   loopChk.addEventListener("change", ()=>{
-    for(const {action} of actions.values()){
-      action.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-      action.clampWhenFinished = !loopChk.checked;
+    for(const {action,mixer} of actions.values()){
+      if(mixer!=='live'){
+        action.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        action.clampWhenFinished = !loopChk.checked;
+      }
+    }
+    for(const d of liveDrivers.values()){
+      d.action.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+      d.action.clampWhenFinished = !loopChk.checked;
     }
   });
 
@@ -207,10 +233,14 @@ async function init(){
   animate();
 }
 
+/* 面板 */
 function setPanel(open){ panelOpen=open; document.getElementById('ui').style.display=open?'flex':'none'; togglePanelBtn.textContent=open?'×':'☰'; }
 function autoCloseOnMobile(){ if (matchMedia('(max-width: 640px)').matches && panelOpen) setPanel(false); }
+
+/* 視窗 */
 function onResize(){ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); }
 
+/* 若找不到 ./character.glb，自動 fallback 到 Soldier */
 async function loadCharacterLocal(url){
   try{
     setStatus(`載入角色中…（本地）`);
@@ -252,9 +282,11 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
     scene.remove(model);
     for(const {action} of actions.values()) action.stop();
     actions.clear(); updateMotionSelect(); current=null; targetSkeleton=null; targetMesh=null;
+    liveDrivers.clear(); activeLive=null;
   }
   model = sceneObj;
 
+  // 找主 SkinnedMesh（骨頭最多）
   targetMesh = null; targetSkeleton = null;
   model.traverse(o=>{
     if (o.isSkinnedMesh && o.skeleton){
@@ -267,10 +299,12 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
   model.position.set(0,0,0); scene.add(model);
 
+  // 兩個 mixer：bones 與 nodes
   mixerBones = new THREE.AnimationMixer(targetMesh);
   mixerNodes = new THREE.AnimationMixer(model);
   const v = Number(speed.value); mixerBones.timeScale=v; mixerNodes.timeScale=v;
 
+  // 角色自帶動畫：按軌道型態分配 mixer（不做自我 retarget）
   if(Array.isArray(characterClips) && characterClips.length){
     characterClips.forEach((clip, idx)=>{
       const name = `GLB / ${clip.name || ("Clip"+idx)}`;
@@ -287,7 +321,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
 }
 function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; } return true; }
 
-/* 自動骨名對照（處理 CMU/CGSpeed 多種命名 + Mixamo 目標） */
+/* ====== 自動骨名對照（針對 CMU/CGSpeed 多命名 + Mixamo 目標） ====== */
 function buildAutoNameMap(targetSkel, sourceSkel){
   const tnames = targetSkel.bones.map(b=>b.name);
   const snames = sourceSkel.bones.map(b=>b.name);
@@ -321,6 +355,7 @@ function buildAutoNameMap(targetSkel, sourceSkel){
   return map;
 }
 
+/* 載入多個動作 */
 async function loadMultipleMotions(files){
   const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
   const glbFiles = files.filter(f => /\.(glb|gltf)$/i.test(f.name));
@@ -332,10 +367,12 @@ async function loadMultipleMotions(files){
 async function loadBVHFromFile(file){ const url = URL.createObjectURL(file); try{ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, file.name.replace(/\.(bvh(\.txt)?)$/i,"")); } finally{ URL.revokeObjectURL(url); } }
 async function loadBVHFromURL(url, displayName){ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh(\.txt)?)$/i,"")); }
 
+/* BVH → 加入 Baked 與 Live 兩種播放 */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton || !targetMesh) { showError("請先載入角色再載入動作"); return; }
   if (!bvhResult || typeof bvhResult !== 'object') { showError(`BVH 解析結果異常：${bvhResult}`); return; }
 
+  // 來源骨架
   let bonesArray=null; const r=bvhResult;
   if (r.skeleton?.bones?.length) bonesArray=r.skeleton.bones;
   else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray=r.skeletonHelper.skeleton.bones;
@@ -345,26 +382,61 @@ function addRetargetedClip(bvhResult, name){
   if(!bonesArray){ showError(`這支 BVH 未解析到骨架，已跳過：${name}`); return; }
   const sourceSkeleton = (r.skeleton && r.skeleton.bones === bonesArray) ? r.skeleton : new THREE.Skeleton(bonesArray);
 
+  // clip
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
 
+  // 只留 Hips 的 Y 平移
   const srcHipName = "Hips";
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
   if (hipPos) { const a = hipPos.values; for (let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
 
+  // 名稱對照
   const namesMap = buildAutoNameMap(targetSkeleton, sourceSkeleton);
   const hipGuess = guessHipName(targetSkeleton);
 
+  /* ---- Baked：轉成 target 的 bones[...] clip ---- */
   try{
-    const retargeted = SkeletonUtils.retargetClip(
+    const baked = SkeletonUtils.retargetClip(
       targetMesh, sourceSkeleton, clip,
-      { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: Object.keys(namesMap).length ? namesMap : undefined }
+      { hip: hipGuess, useTargetMatrix:true, preserveHipPosition:true, names: Object.keys(namesMap).length?namesMap:undefined }
     );
-    addAction(retargeted, name, 'bones');
-  }catch(e){ showError(`重定向失敗（${name}）：` + (e?.message||e)); }
+    addAction(baked, name, 'bones');
+  }catch(e){ showError(`Baked 重定向失敗（${name}）：`+(e?.message||e)); }
+
+  /* ---- Live：用來源骨架逐幀驅動 ---- */
+  try{
+    // 來源物件（優先用 skeletonHelper，有 skeleton 屬性、便於動畫）
+    const sourceObj = r.skeletonHelper || (()=>{
+      const root = new THREE.Object3D();
+      // 將 bones 連成層級（BVHLoader 已建好，通常 bones[0] 的 parent 就是根）
+      if (bonesArray[0]?.parent) root.add(bonesArray[0].parent);
+      return root;
+    })();
+
+    // 放到場景但隱藏（仍可被 mixer 驅動）
+    if (!sourceObj.parent) scene.add(sourceObj);
+    sourceObj.visible = false;
+
+    const liveMixer = new THREE.AnimationMixer(sourceObj);
+    const liveAction = liveMixer.clipAction(clip.clone());
+    liveAction.enabled = true;
+    liveAction.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+    liveAction.clampWhenFinished = !loopChk.checked;
+    liveAction.time = 0; liveAction.paused = false;
+
+    const v = Number(speed.value);
+    liveMixer.timeScale = v;
+
+    const liveName = `${name} (Live)`;
+    actions.set(liveName, { action: liveAction, mixer:'live' });
+    liveDrivers.set(liveName, { mixer: liveMixer, action: liveAction, sourceObj, hip: hipGuess, names: namesMap });
+    updateMotionSelect();
+  }catch(e){ showError(`Live 重定向建立失敗（${name}）：`+(e?.message||e)); }
 }
 
+/* GLB 動作來源 → 目前角色（輸出 bones[...]，用 bones mixer） */
 async function loadMotionGLB(file){
   const url = URL.createObjectURL(file);
   try{
@@ -385,6 +457,7 @@ async function loadMotionGLB(file){
   }finally{ URL.revokeObjectURL(url); }
 }
 
+/* 猜 Hips 名稱 */
 function guessHipName(skel){
   const names = skel.bones.map(b=>b.name);
   const list = ["Hips","mixamorig:Hips","hip","hips","Root","root"];
@@ -393,7 +466,11 @@ function guessHipName(skel){
   return hit || "Hips";
 }
 
+/* 動作管理 */
 function addAction(clip, name, mixerKind){
+  if(mixerKind==='live'){ // live 的 entry 由 addRetargetedClip 另外處理
+    updateMotionSelect(); return;
+  }
   const mixer = mixerKind==='nodes' ? mixerNodes : mixerBones;
   const action = mixer.clipAction(clip);
   action.enabled = true;
@@ -403,6 +480,7 @@ function addAction(clip, name, mixerKind){
   actions.set(name, {action, mixer:mixerKind}); updateMotionSelect();
 }
 function updateMotionSelect(){
+  const cur = motionSelect.value;
   motionSelect.innerHTML = "";
   if(!actions.size){
     const opt = document.createElement("option"); opt.disabled=true; opt.selected=true; opt.textContent="（尚未載入動作）";
@@ -411,22 +489,53 @@ function updateMotionSelect(){
   for(const name of actions.keys()){
     const opt = document.createElement("option"); opt.value=name; opt.textContent=name; motionSelect.appendChild(opt);
   }
+  if (actions.has(cur)) motionSelect.value = cur;
 }
 function switchToAction(name, fade=0.35){
   const next = actions.get(name); if(!next){ showError("找不到動作："+name); return; }
-  if(current && current.mixer!==next.mixer){
-    current.action.stop();
-    next.action.reset().play();
-  }else if(current){
-    current.action.crossFadeTo(next.action.reset().play(), fade, true);
+
+  // 停掉所有既有 action
+  for(const ent of actions.values()){ if(ent.mixer!=='live') ent.action.stop(); }
+  activeLive = null;
+
+  if(next.mixer==='live'){
+    const drv = liveDrivers.get(name);
+    if(!drv){ showError("找不到 Live 驅動器："+name); return; }
+    drv.action.reset().play();
+    activeLive = drv;
+    current = next; setStatus(`播放（Live）：${name}`); return;
+  }
+
+  if(current){
+    if(current.mixer!==next.mixer){
+      current.action.stop();
+      next.action.reset().play();
+    }else{
+      current.action.crossFadeTo(next.action.reset().play(), fade, true);
+    }
   }else{
     next.action.reset().play();
   }
   current = next; setStatus(`播放：${name}`);
 }
 
+/* 其他 */
 function setStatus(msg){ statusEl.textContent = msg; }
-function animate(){ requestAnimationFrame(animate); const dt = clock.getDelta(); mixerBones?.update(dt); mixerNodes?.update(dt); renderer.render(scene, camera); }
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  mixerBones?.update(dt);
+  mixerNodes?.update(dt);
+  if(activeLive){
+    activeLive.mixer.update(dt);
+    // 逐幀把來源骨架 Pose 轉到目標
+    SkeletonUtils.retarget(
+      targetMesh, activeLive.sourceObj,
+      { hip: activeLive.hip, useTargetMatrix:true, preservePosition:false, names: activeLive.names }
+    );
+  }
+  renderer.render(scene, camera);
+}
 function showError(msg){ console.error(msg); statusEl.textContent="⚠️ "+msg; errorToast.textContent="⚠️ "+msg; errorToast.style.display="block"; }
 function showFatal(err){ console.error(err); errorToast.textContent="🚫 初始化失敗：\n"+(err?.message||err); errorToast.style.display="block"; statusEl.textContent="🚫 初始化失敗"; }
 window.addEventListener("error",(e)=>showError("腳本錯誤："+(e?.message||"unknown")));
