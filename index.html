@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜BVH/GLB → 角色重定向（自動骨名對照 + 雙 Mixer）</title>
+<title>Mocap Demo｜BVH/GLB → 角色重定向</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -62,6 +62,11 @@
 <div id="drop"></div>
 <div id="errorToast"></div>
 
+<!-- 行動版 Console：網址加 ?debug=1 啟用 -->
+<script>
+(function(){if(location.search.includes('debug=1')){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/eruda';s.onload=function(){eruda.init();console.log('Eruda ready')};document.head.appendChild(s);}})();
+</script>
+
 <script type="module">
 import * as THREE from 'https://esm.sh/three@0.152.2';
 import { OrbitControls } from 'https://esm.sh/three@0.152.2/examples/jsm/controls/OrbitControls.js';
@@ -69,13 +74,11 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* Soldier 候選，避免 403/404 */
 const SOLDIER_CANDIDATES = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
 ];
 
-/* DOM */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const btnLoadModel = document.getElementById("btnLoadModel");
@@ -91,15 +94,13 @@ const drop = document.getElementById("drop");
 const errorToast = document.getElementById("errorToast");
 const togglePanelBtn = document.getElementById("togglePanel");
 
-/* State */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
-let mixerBones, mixerNodes;               // 雙 Mixer
-const actions = new Map();                // name -> { action, mixer:'bones'|'nodes' }
+let mixerBones, mixerNodes;
+const actions = new Map();    // name -> { action, mixer:'bones'|'nodes' }
 let current = null;
 let panelOpen = false;
 
-/* 初始化 */
 init().catch(showFatal);
 
 async function init(){
@@ -206,14 +207,10 @@ async function init(){
   animate();
 }
 
-/* 面板 */
 function setPanel(open){ panelOpen=open; document.getElementById('ui').style.display=open?'flex':'none'; togglePanelBtn.textContent=open?'×':'☰'; }
 function autoCloseOnMobile(){ if (matchMedia('(max-width: 640px)').matches && panelOpen) setPanel(false); }
-
-/* 視窗 */
 function onResize(){ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); }
 
-/* 若找不到 ./character.glb，自動 fallback 到 Soldier */
 async function loadCharacterLocal(url){
   try{
     setStatus(`載入角色中…（本地）`);
@@ -258,7 +255,6 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   }
   model = sceneObj;
 
-  // 找主 SkinnedMesh（骨頭最多）
   targetMesh = null; targetSkeleton = null;
   model.traverse(o=>{
     if (o.isSkinnedMesh && o.skeleton){
@@ -271,12 +267,10 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   if(!targetSkeleton){ throw new Error("找不到 SkinnedMesh/Skeleton，請確認角色已綁骨。"); }
   model.position.set(0,0,0); scene.add(model);
 
-  // 兩個 mixer：bones 與 nodes
   mixerBones = new THREE.AnimationMixer(targetMesh);
   mixerNodes = new THREE.AnimationMixer(model);
   const v = Number(speed.value); mixerBones.timeScale=v; mixerNodes.timeScale=v;
 
-  // 角色自帶動畫：按軌道型態分配 mixer（不做自我 retarget）
   if(Array.isArray(characterClips) && characterClips.length){
     characterClips.forEach((clip, idx)=>{
       const name = `GLB / ${clip.name || ("Clip"+idx)}`;
@@ -293,52 +287,40 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
 }
 function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; } return true; }
 
-/* ====== 自動骨名對照（針對 CMU/CGSpeed 多種命名） ====== */
+/* 自動骨名對照（處理 CMU/CGSpeed 多種命名 + Mixamo 目標） */
 function buildAutoNameMap(targetSkel, sourceSkel){
   const tnames = targetSkel.bones.map(b=>b.name);
   const snames = sourceSkel.bones.map(b=>b.name);
-  const has = (arr, name) => arr.some(n => n.toLowerCase() === name.toLowerCase());
   const pick = (...cands) => cands.find(c => c && snames.some(n => n.toLowerCase() === c.toLowerCase()));
-
   const isMixamo = tnames.some(n => n.startsWith('mixamorig:'));
-
   const T = (n) => isMixamo ? `mixamorig:${n}` : n;
-
   const map = {};
-  // 軀幹
   map[T('Hips')]      = pick('Hips','hip','hipjoint','root');
   map[T('Spine')]     = pick('Spine','lowerback','abdomen','spine');
   map[T('Spine1')]    = pick('Spine1','upperback','thorax','chest');
   map[T('Spine2')]    = pick('Spine2','spine1','chest2');
   map[T('Neck')]      = pick('Neck','lowerneck','neck');
   map[T('Head')]      = pick('Head','head');
-  // 左臂
   map[T('LeftShoulder')] = pick('LeftShoulder','lclavicle','leftcollar');
   map[T('LeftArm')]      = pick('LeftArm','lhumerus','leftshoulder');
   map[T('LeftForeArm')]  = pick('LeftForeArm','lradius','leftelbow','leftforearm');
   map[T('LeftHand')]     = pick('LeftHand','lwrist','lefthand');
-  // 右臂
   map[T('RightShoulder')] = pick('RightShoulder','rclavicle','rightcollar');
   map[T('RightArm')]      = pick('RightArm','rhumerus','rightshoulder');
   map[T('RightForeArm')]  = pick('RightForeArm','rradius','rightelbow','rightforearm');
   map[T('RightHand')]     = pick('RightHand','rwrist','righthand');
-  // 左腿
   map[T('LeftUpLeg')]   = pick('LeftUpLeg','lhipjoint','lefthip','leftupleg');
   map[T('LeftLeg')]     = pick('LeftLeg','lfemur','ltibia','leftleg','leftknee');
   map[T('LeftFoot')]    = pick('LeftFoot','lfoot');
   map[T('LeftToeBase')] = pick('LeftToeBase','ltoes','ltoe','lefttoe');
-  // 右腿
   map[T('RightUpLeg')]   = pick('RightUpLeg','rhipjoint','righthip','rightupleg');
   map[T('RightLeg')]     = pick('RightLeg','rfemur','rtibia','rightleg','rightknee');
   map[T('RightFoot')]    = pick('RightFoot','rfoot');
   map[T('RightToeBase')] = pick('RightToeBase','rtoes','rtoe','righttoe');
-
-  // 移除沒對上的 key，避免誤對
   for (const k of Object.keys(map)){ if(!map[k]) delete map[k]; }
   return map;
 }
 
-/* 載入多個動作 */
 async function loadMultipleMotions(files){
   const bvhFiles = files.filter(f => /\.bvh($|\.)/i.test(f.name));
   const glbFiles = files.filter(f => /\.(glb|gltf)$/i.test(f.name));
@@ -350,12 +332,10 @@ async function loadMultipleMotions(files){
 async function loadBVHFromFile(file){ const url = URL.createObjectURL(file); try{ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, file.name.replace(/\.(bvh(\.txt)?)$/i,"")); } finally{ URL.revokeObjectURL(url); } }
 async function loadBVHFromURL(url, displayName){ const res = await new BVHLoader().loadAsync(url); addRetargetedClip(res, displayName || url.split("/").pop().replace(/\.(bvh(\.txt)?)$/i,"")); }
 
-/* BVH → 角色（輸出 bones[...]，用 bones mixer） */
 function addRetargetedClip(bvhResult, name){
   if (!targetSkeleton || !targetMesh) { showError("請先載入角色再載入動作"); return; }
   if (!bvhResult || typeof bvhResult !== 'object') { showError(`BVH 解析結果異常：${bvhResult}`); return; }
 
-  // 來源骨架
   let bonesArray=null; const r=bvhResult;
   if (r.skeleton?.bones?.length) bonesArray=r.skeleton.bones;
   else if (r.skeletonHelper?.skeleton?.bones?.length) bonesArray=r.skeletonHelper.skeleton.bones;
@@ -365,17 +345,14 @@ function addRetargetedClip(bvhResult, name){
   if(!bonesArray){ showError(`這支 BVH 未解析到骨架，已跳過：${name}`); return; }
   const sourceSkeleton = (r.skeleton && r.skeleton.bones === bonesArray) ? r.skeleton : new THREE.Skeleton(bonesArray);
 
-  // clip
   let clip = (r.clip && typeof r.clip.clone === 'function') ? r.clip.clone() : r.clip;
   if (!clip) { showError(`BVH 無動畫 clip，已跳過：${name}`); return; }
 
-  // 只留 Hips 的 Y 平移（避免飄移）
   const srcHipName = "Hips";
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHipName + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHipName + ".position"));
   if (hipPos) { const a = hipPos.values; for (let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
 
-  // 自動建立骨名對照（Mixamo/一般 glTF 目標 × 多種 CMU 命名）
   const namesMap = buildAutoNameMap(targetSkeleton, sourceSkeleton);
   const hipGuess = guessHipName(targetSkeleton);
 
@@ -388,7 +365,6 @@ function addRetargetedClip(bvhResult, name){
   }catch(e){ showError(`重定向失敗（${name}）：` + (e?.message||e)); }
 }
 
-/* GLB 動作來源 → 目前角色（輸出 bones[...]，用 bones mixer） */
 async function loadMotionGLB(file){
   const url = URL.createObjectURL(file);
   try{
@@ -409,7 +385,6 @@ async function loadMotionGLB(file){
   }finally{ URL.revokeObjectURL(url); }
 }
 
-/* 猜 Hips 名稱 */
 function guessHipName(skel){
   const names = skel.bones.map(b=>b.name);
   const list = ["Hips","mixamorig:Hips","hip","hips","Root","root"];
@@ -418,7 +393,6 @@ function guessHipName(skel){
   return hit || "Hips";
 }
 
-/* 動作管理（雙 Mixer） */
 function addAction(clip, name, mixerKind){
   const mixer = mixerKind==='nodes' ? mixerNodes : mixerBones;
   const action = mixer.clipAction(clip);
@@ -451,7 +425,6 @@ function switchToAction(name, fade=0.35){
   current = next; setStatus(`播放：${name}`);
 }
 
-/* 其他 */
 function setStatus(msg){ statusEl.textContent = msg; }
 function animate(){ requestAnimationFrame(animate); const dt = clock.getDelta(); mixerBones?.update(dt); mixerNodes?.update(dt); renderer.render(scene, camera); }
 function showError(msg){ console.error(msg); statusEl.textContent="⚠️ "+msg; errorToast.textContent="⚠️ "+msg; errorToast.style.display="block"; }
