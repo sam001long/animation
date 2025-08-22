@@ -74,7 +74,7 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* 多來源 Soldier（避免 403/404） */
+/* Soldier 多來源（避免 403/404） */
 const SOLDIER_CANDIDATES = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
@@ -105,7 +105,7 @@ let current = null;
 let panelOpen = false;
 
 /* Live 驅動器 */
-const liveDrivers = new Map();              // name -> { mixer, action, sourceObj, hip, names }
+const liveDrivers = new Map();              // name -> { mixer, action, helper, hip, names }
 let activeLive = null;
 
 /* 初始化 */
@@ -335,7 +335,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
 }
 function ensureModel(){ if(!model){ showError("請先載入角色（按鈕或上傳 GLB）。"); return false; } return true; }
 
-/* ====== 更通用的骨名對照：支援底線/大小寫、忽略 twist/roll/end/ik ====== */
+/* 更通用的骨名對照：支援底線/大小寫、忽略 twist/roll/end/ik */
 function buildAutoNameMap(targetSkel, sourceSkel){
   const snames = sourceSkel.bones.map(b=>b.name);
   const norm = s => (s||'').toLowerCase().replace(/[^a-z]/g,'');
@@ -378,17 +378,23 @@ function buildAutoNameMap(targetSkel, sourceSkel){
   return map;
 }
 
-/* 取出 BVH 骨架 root（包含 Hips 的那棵層級） */
-function getBVHRootObject(res){
-  const bone0 =
-    res?.skeleton?.bones?.[0] ||
-    res?.skeletonHelper?.skeleton?.bones?.[0] ||
-    (Array.isArray(res?.bones) && res.bones[0]) ||
-    res?.restPose?.bones?.[0] || null;
-  if (!bone0) return null;
-  let root = bone0;
-  while (root.parent && root.parent.type !== 'Scene') root = root.parent;
-  return root;
+/* 建立 Live 所需物件：骨架 root + SkeletonHelper(含 skeleton) */
+function makeLiveSource(res){
+  const bonesArray =
+      (res?.skeleton?.bones && res.skeleton.bones.length ? res.skeleton.bones : null) ||
+      (res?.skeletonHelper?.skeleton?.bones && res.skeletonHelper.skeleton.bones.length ? res.skeletonHelper.skeleton.bones : null) ||
+      (Array.isArray(res?.bones) && res.bones.length ? res.bones : null) ||
+      (res?.restPose?.bones && res.restPose.bones.length ? res.restPose.bones : null);
+  if (!bonesArray) return null;
+
+  let boneRoot = bonesArray[0];
+  while (boneRoot.parent && boneRoot.parent.type !== 'Scene') boneRoot = boneRoot.parent;
+
+  const sourceSkeleton = res.skeleton || new THREE.Skeleton(bonesArray);
+  const helper = res.skeletonHelper || new THREE.SkeletonHelper(boneRoot);
+  helper.skeleton = sourceSkeleton; // 讓 helper 有 .skeleton.bones
+
+  return { boneRoot, helper, skeleton: sourceSkeleton };
 }
 
 /* 載入多個動作 */
@@ -449,19 +455,22 @@ function addRetargetedClip(bvhResult, name){
     addAction(baked, name, 'bones');
   }catch(e){ showError(`Baked 重定向失敗（${name}）：`+(e?.message||e)); }
 
-  /* ---- Live：來源骨架逐幀驅動（修正 root 綁定） ---- */
+  /* ---- Live：來源骨架逐幀驅動（使用 helper，避免 reading 'bones'） ---- */
   try{
-    const sourceRoot = getBVHRootObject(bvhResult);
-    if (!sourceRoot) throw new Error("找不到 BVH 骨架 root");
-    if (!sourceRoot.parent) scene.add(sourceRoot);
-    sourceRoot.traverse(o => { o.visible = false; });
+    const liveSrc = makeLiveSource(bvhResult);
+    if (!liveSrc) throw new Error("找不到 BVH 骨架");
 
-    const liveMixer  = new THREE.AnimationMixer(sourceRoot);
+    if (!liveSrc.boneRoot.parent) scene.add(liveSrc.boneRoot);
+    if (!liveSrc.helper.parent)   scene.add(liveSrc.helper);
+    liveSrc.helper.visible = false;
+    liveSrc.boneRoot.traverse(o => o.visible = false);
+
+    const liveMixer  = new THREE.AnimationMixer(liveSrc.boneRoot); // Mixer 綁在骨架 root
     const liveAction = liveMixer.clipAction(clip.clone());
     liveAction.enabled = true;
     liveAction.setLoop(loopChk.checked ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
     liveAction.clampWhenFinished = !loopChk.checked;
-    liveAction.time = 0; liveAction.paused = false;
+    liveAction.reset().play();
 
     liveMixer.timeScale = Number(speed.value);
 
@@ -470,7 +479,7 @@ function addRetargetedClip(bvhResult, name){
     liveDrivers.set(liveName, {
       mixer: liveMixer,
       action: liveAction,
-      sourceObj: sourceRoot,
+      helper: liveSrc.helper,  // 這個有 .skeleton.bones
       hip: hipGuess,
       names: namesMap
     });
@@ -563,7 +572,7 @@ function animate(){
   if(activeLive){
     activeLive.mixer.update(dt);
     SkeletonUtils.retarget(
-      targetMesh, activeLive.sourceObj,
+      targetMesh, activeLive.helper,  // 用 helper（含 skeleton.bones）
       { hip: activeLive.hip, useTargetMatrix:true, preservePosition:false, names: activeLive.names }
     );
   }
