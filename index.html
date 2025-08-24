@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜穩定版 v3e</title>
+<title>Mocap Demo｜穩定版 v3f</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -138,8 +138,7 @@ async function init(){
   camera.position.set(0,1.6,3);
 
   controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0,1,0);
-  controls.update();
+  controls.target.set(0,1,0); controls.update();
 
   const hemi = new THREE.HemisphereLight(0xffffff, 0x202035, .9); scene.add(hemi);
   const dir  = new THREE.DirectionalLight(0xffffff, 1.2); dir.position.set(3,5,2); dir.castShadow = true; dir.shadow.mapSize.set(2048,2048); scene.add(dir);
@@ -147,7 +146,7 @@ async function init(){
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(30,30), new THREE.MeshStandardMaterial({color:0x171a24, roughness:1}));
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
 
-  window.addEventListener("resize", ()=>{ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+  addEventListener("resize", ()=>{ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
   // 面板收合
   let panelOpen = matchMedia('(min-width: 641px)').matches;
@@ -263,11 +262,10 @@ function restoreBindPose(){
   setStatus("已還原綁定姿勢");
 }
 
-/* 名稱標準化與映射（支援 Hips / LHipJoint / LeftUpLeg… 轉 Mixamo） */
+/* 名稱標準化與映射（支援 Hips/LHipJoint/LeftUpLeg… → Mixamo） */
 function normName(n){
   if(!n) return "";
-  n = String(n);
-  n = n.replace(/^mixamorig:/i, "").replace(/^armature[:_]?/i, "");
+  n = String(n).replace(/^mixamorig:/i, "").replace(/^armature[:_]?/i, "");
   n = n.replace(/^(l_|lf_|lt_|l)(?=[A-Z])/i, "left")
        .replace(/^(r_|rt_|r)(?=[A-Z])/i, "right");
   n = n.toLowerCase().replace(/[^a-z]/g,"");
@@ -327,6 +325,19 @@ function findSourceSkeletonFromGLTF(root){
     return new THREE.Skeleton(ordered);
   }
   return null;
+}
+
+/* 用各 track 的 times 修正 clip 時長（處理 retargetClip 回傳 -1 的情況） */
+function fixClipDuration(clip){
+  if(!clip || !clip.tracks?.length) return 0;
+  let maxT = 0;
+  for(const t of clip.tracks){
+    const arr = t.times;
+    if(arr && arr.length){ const last = arr[arr.length-1]; if(last>maxT) maxT=last; }
+  }
+  // three 的慣例：duration=-1 代表「依 tracks 自動算」；這裡直接寫回避免被當成 0
+  if(!isFinite(clip.duration) || clip.duration < 0) clip.duration = maxT;
+  return maxT;
 }
 
 /* 載入示範（先本機，再線上） */
@@ -394,6 +405,7 @@ async function loadMultipleMotions(files){
             const clean = clip.clone();
             clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
             const baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clean, { hip, useTargetMatrix:true, preserveHipPosition:true });
+            fixClipDuration(baked);
             addAction(baked, `${name} / ${clip.name||("Clip"+idx)}`, 'bones');
           });
           addedAny=true;
@@ -452,19 +464,26 @@ async function addBVHAsBakedClip(bvhResult, displayName){
   const b={ hip, useTargetMatrix:false, preserveHipPosition:true, names:nameMap };
   try{
     baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, a);
-    if(!baked || !isFinite(baked.duration) || baked.duration<=0){
+    fixClipDuration(baked);
+    if(!(baked?.tracks?.length)) { // 若完全沒軌，再試另一種
       baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, b);
+      fixClipDuration(baked);
     }
   }catch(e){
-    try{ baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, b); }
-    catch(e2){ console.warn("[BVH] retargetClip 皆失敗：", displayName, e2); baked=null; }
+    try{
+      baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, b);
+      fixClipDuration(baked);
+    }catch(e2){
+      console.warn("[BVH] retargetClip 皆失敗：", displayName, e2);
+      baked=null;
+    }
   }
-  if(!baked || !isFinite(baked.duration) || baked.duration<=0){
-    console.warn("[BVH] 重定向後 clip 無時長：", displayName);
+  if(!baked || !baked.tracks?.length){
+    console.warn("[BVH] 重定向後無軌（多半是骨名對不上）：", displayName);
     return false;
   }
   addAction(baked, displayName, 'bones');
-  console.log(`[OK] 加入動作 ${displayName}，duration=${baked.duration.toFixed(3)}s`);
+  console.log(`[OK] 加入動作 ${displayName}，duration=${(baked.duration||0).toFixed(3)}s`);
   return true;
 }
 
