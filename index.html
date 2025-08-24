@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜穩定版 v3c（Baked Only）</title>
+<title>Mocap Demo｜穩定版 v3d（Baked Only）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -42,7 +42,7 @@
     <label>上傳動作（.bvh 或 .glb）
       <input id="motionInput" type="file" accept=".bvh,.glb,.gltf" multiple/>
     </label>
-    <button id="btnLoadSamples">一鍵載入「Walk / Run」示範 BVH</button>
+    <button id="btnLoadSamples">一鍵載入示範 BVH（先找本機 ./motions，再找線上）</button>
   </div>
   <div class="row" style="width:100%">
     <label>動作清單
@@ -69,15 +69,13 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* 固定可用資源 */
-const SOLDIER_URLS = [
-  "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
-  "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
-];
-
-// 線上示範（加上 three.js 官方 pirouette.bvh 當備援；任一成功即可）
-const SAMPLE_BVH = {
-  "Walk": [
+/* 資源：先試本機，再試線上（避免外網被擋） */
+const LOCAL_SAMPLE = {
+  Walk: ["./motions/walk.bvh"],
+  "Run (09_01)": ["./motions/run.bvh"]
+};
+const REMOTE_SAMPLE = {
+  Walk: [
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh",
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_08.bvh",
     "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/pirouette.bvh",
@@ -88,9 +86,13 @@ const SAMPLE_BVH = {
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_02.bvh",
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_03.bvh",
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_05.bvh",
-    "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/pirouette.bvh"  // 最後保底
+    "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/pirouette.bvh"
   ]
 };
+const SOLDIER_URLS = [
+  "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
+  "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
+];
 
 /* DOM & 狀態 */
 const app = document.getElementById("app");
@@ -113,7 +115,7 @@ const errorToast = document.getElementById("errorToast");
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
 let mixerBones, mixerNodes;
-const actions = new Map();  // name -> { action, mixer:'bones'|'nodes' }
+const actions = new Map();
 let current = null;
 let bindPose = null;
 
@@ -170,7 +172,7 @@ async function init(){
   animate();
 }
 
-/* 角色載入 */
+/* 載入角色 */
 async function loadCharacterLocal(url){
   try{
     const head = await fetch(url,{method:"HEAD"}); if(!head.ok) throw new Error(`找不到 ${url}（HTTP ${head.status}）`);
@@ -259,25 +261,41 @@ function restoreBindPose(){
   setStatus("已還原綁定姿勢");
 }
 
-/* 示例 BVH（Baked only） */
+/* 載入示範（先本機，再線上） */
 async function loadSampleBVHs(){
   if(!targetSkeleton){ showError("請先載入角色（建議 Soldier）"); return; }
   setStatus("載入示範 BVH…");
 
   let totalAdded = 0;
-  for(const [name, urls] of Object.entries(SAMPLE_BVH)){
+
+  // 先試本機 ./motions
+  for(const [name, urls] of Object.entries(LOCAL_SAMPLE)){
     let ok=false;
     for(const url of urls){
       try{
-        console.log("[BVH] 嘗試載入：", name, url);
         const res = await new BVHLoader().loadAsync(url);
         const added = await addBVHAsBakedClip(res, name);
         if(added){ ok=true; totalAdded++; break; }
-      }catch(e){
-        console.warn(`[BVH] 下載/解析失敗：${name} @ ${url}`, e);
-      }
+      }catch(e){ /* 本機不存在就跳過 */ }
     }
-    if(!ok) console.warn(`[BVH] ${name} 所有候選皆未成功。`);
+  }
+
+  // 若本機沒有，再試線上
+  const needRemote = totalAdded===0;
+  if(needRemote){
+    for(const [name, urls] of Object.entries(REMOTE_SAMPLE)){
+      let ok=false;
+      for(const url of urls){
+        try{
+          const res = await new BVHLoader().loadAsync(url);
+          const added = await addBVHAsBakedClip(res, name);
+          if(added){ ok=true; totalAdded++; break; }
+        }catch(e){
+          console.warn(`[BVH] 下載/解析失敗：${name} @ ${url}`, e);
+        }
+      }
+      if(!ok) console.warn(`[BVH] ${name} 所有候選皆未成功。`);
+    }
   }
 
   updateMotionSelect();
@@ -285,40 +303,86 @@ async function loadSampleBVHs(){
   if(first){ motionSelect.value=first; switchToAction(first,0.0,true); }
 
   if(totalAdded===0){
-    showError("示範動作載入失敗（所有候選皆未成功）。你仍可用「上傳動作」載入本機 .bvh 或 .glb。");
+    showError("示範動作載入失敗（本機與線上皆未成功）。建議：在 repo 建立 /motions/ 資料夾，放入 walk.bvh / run.bvh 後再試，或用『上傳動作』載入本機檔。");
   }else{
     setStatus(`已載入 ${totalAdded} 支示範動作`);
   }
 }
+
+/* 上傳多個動作（強化版） */
 async function loadMultipleMotions(files){
   if(!targetSkeleton){ showError("請先載入角色（建議 Soldier）"); return; }
+  let addedAny = false;
+
   for(const f of files){
-    const ext = f.name.toLowerCase();
-    if(ext.endsWith('.bvh') || ext.endsWith('.bvh.txt')){
-      const url = URL.createObjectURL(f);
-      try{ const res = await new BVHLoader().loadAsync(url); await addBVHAsBakedClip(res, f.name.replace(/\.(bvh(\.txt)?)$/i,'')); }
-      catch(e){ showError(`載入 BVH 失敗（${f.name}）：`+(e?.message||e)); }
-      finally{ URL.revokeObjectURL(url); }
-    }else if(ext.endsWith('.glb') || ext.endsWith('.gltf')){
-      const url = URL.createObjectURL(f);
-      try{
-        const gltf = await new GLTFLoader().loadAsync(url);
-        let srcSkel=null; gltf.scene.traverse(o=>{ if(o.isSkinnedMesh && !srcSkel){ srcSkel=o.skeleton; }});
-        if(!srcSkel || !gltf.animations?.length) throw new Error('GLB 無骨架或動畫');
-        const hip = guessHipName(targetSkeleton);
-        gltf.animations.forEach((clip, idx)=>{
-          const clean = clip.clone();
-          clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
-          const baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clean, { hip, useTargetMatrix:true, preserveHipPosition:true });
-          addAction(baked, `${f.name} / ${clip.name||("Clip"+idx)}`, 'bones');
-        });
-      }catch(e){ showError(`載入 GLB 動作失敗（${f.name}）：`+(e?.message||e)); }
-      finally{ URL.revokeObjectURL(url); }
-    }else{
-      showError(`不支援的格式：${f.name}`);
+    const name = f.name;
+    const ext = name.toLowerCase();
+    try{
+      if(ext.endsWith('.bvh') || ext.endsWith('.bvh.txt')){
+        // 直接讀文字 + parse（避免某些裝置 objectURL/MIME 問題）
+        const text = await readFileText(f);
+        const res = new BVHLoader().parse(text);
+        const ok = await addBVHAsBakedClip(res, name.replace(/\.(bvh(\.txt)?)$/i,''));
+        if(ok){ addedAny=true; }
+      }else if(ext.endsWith('.glb') || ext.endsWith('.gltf')){
+        const url = URL.createObjectURL(f);
+        try{
+          const gltf = await new GLTFLoader().loadAsync(url);
+          const srcSkel = findSourceSkeletonFromGLTF(gltf.scene);
+          if(!srcSkel || !gltf.animations?.length) throw new Error('GLB 無骨架或動畫');
+          const hip = guessHipName(targetSkeleton);
+          gltf.animations.forEach((clip, idx)=>{
+            const clean = clip.clone();
+            clean.tracks = clean.tracks.filter(t=>!t.name.endsWith(".position"));
+            const baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clean, { hip, useTargetMatrix:true, preserveHipPosition:true });
+            addAction(baked, `${name} / ${clip.name||("Clip"+idx)}`, 'bones');
+          });
+          addedAny = true;
+        }finally{
+          URL.revokeObjectURL(url);
+        }
+      }else{
+        showError(`不支援的格式：${name}`);
+      }
+    }catch(e){
+      showError(`載入動作失敗（${name}）：`+(e?.message||e));
     }
   }
+
   updateMotionSelect();
+  if(addedAny){
+    const first = actions.keys().next().value;
+    if(first){ motionSelect.value=first; switchToAction(first,0.0,true); }
+    setStatus("已載入上傳動作");
+  }
+}
+
+/* 讀檔工具 */
+function readFileText(file){
+  return new Promise((resolve,reject)=>{
+    const fr = new FileReader();
+    fr.onerror = ()=>reject(fr.error||new Error("readFile失敗"));
+    fr.onload = ()=>resolve(String(fr.result||""));
+    fr.readAsText(file);
+  });
+}
+
+/* 從 GLTF 場景找來源 skeleton（即使沒有 skinned mesh 也盡量組一個） */
+function findSourceSkeletonFromGLTF(root){
+  // 1) 優先找 skinned mesh 的 skeleton
+  let skel=null;
+  root.traverse(o=>{ if(!skel && o.isSkinnedMesh && o.skeleton){ skel = o.skeleton; } });
+  if(skel) return skel;
+  // 2) 沒有 skinned mesh：收集所有 Bone 節點，組成 Skeleton（沒有 inverses 也可用於 retargetClip）
+  const bones=[];
+  root.traverse(o=>{ if(o.isBone) bones.push(o); });
+  if(bones.length){
+    // 讓根骨在陣列前面
+    const roots = bones.filter(b=>!b.parent || !b.parent.isBone);
+    const ordered = [...roots, ...bones.filter(b=>!roots.includes(b))];
+    return new THREE.Skeleton(ordered);
+  }
+  return null;
 }
 
 /* BVH → Baked Clip（回傳是否成功） */
@@ -387,6 +451,8 @@ function addAction(clip, name, mixerKind){
   action.paused = false;
   actions.set(name, {action, mixer:mixerKind});
   updateMotionSelect();
+  // 若目前沒有在播，立刻切到這支
+  if(!current || current.action.paused){ switchToAction(name,0.0,true); }
 }
 function updateMotionSelect(){
   const cur = motionSelect.value;
