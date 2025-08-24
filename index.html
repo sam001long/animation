@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜穩定版 v3b（Baked Only）</title>
+<title>Mocap Demo｜穩定版 v3c（Baked Only）</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -74,17 +74,21 @@ const SOLDIER_URLS = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb",
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
 ];
-// 線上示範（Run 多備援，任一成功即可）
+
+// 線上示範（加上 three.js 官方 pirouette.bvh 當備援；任一成功即可）
 const SAMPLE_BVH = {
   "Walk": [
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh",
-    "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_08.bvh"
+    "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_08.bvh",
+    "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/pirouette.bvh",
+    "https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/bvh/pirouette.bvh"
   ],
   "Run (09_01)": [
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_01.bvh",
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_02.bvh",
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_03.bvh",
-    "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_05.bvh"
+    "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/009/09_05.bvh",
+    "https://raw.githubusercontent.com/mrdoob/three.js/r152/examples/models/bvh/pirouette.bvh"  // 最後保底
   ]
 };
 
@@ -265,6 +269,7 @@ async function loadSampleBVHs(){
     let ok=false;
     for(const url of urls){
       try{
+        console.log("[BVH] 嘗試載入：", name, url);
         const res = await new BVHLoader().loadAsync(url);
         const added = await addBVHAsBakedClip(res, name);
         if(added){ ok=true; totalAdded++; break; }
@@ -280,7 +285,7 @@ async function loadSampleBVHs(){
   if(first){ motionSelect.value=first; switchToAction(first,0.0,true); }
 
   if(totalAdded===0){
-    showError("示範動作載入失敗（所有候選皆未成功）");
+    showError("示範動作載入失敗（所有候選皆未成功）。你仍可用「上傳動作」載入本機 .bvh 或 .glb。");
   }else{
     setStatus(`已載入 ${totalAdded} 支示範動作`);
   }
@@ -329,6 +334,7 @@ async function addBVHAsBakedClip(bvhResult, displayName){
   let clip = (r.clip && typeof r.clip.clone==='function') ? r.clip.clone() : r.clip;
   if(!clip){ console.warn("[BVH] 無 clip：", displayName); return false; }
 
+  // 只保留來源 Hip 的 position（Y），避免漂移
   const srcHip = findSourceHipName(bonesArray);
   clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHip + ".position"));
   const hipPos = clip.tracks.find(t => t.name === (srcHip + ".position"));
