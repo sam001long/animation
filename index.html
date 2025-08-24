@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mocap Demo｜穩定版 v3d（Baked Only）</title>
+<title>Mocap Demo｜穩定版 v3e</title>
 <style>
   :root { --bg:#0f1115; --panel:#161922; --text:#e8e8ea; --muted:#9aa0a6; --acc:#4f8cff; }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto}
@@ -69,11 +69,12 @@ import { GLTFLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/GL
 import { BVHLoader } from 'https://esm.sh/three@0.152.2/examples/jsm/loaders/BVHLoader.js';
 import * as SkeletonUtils from 'https://esm.sh/three@0.152.2/examples/jsm/utils/SkeletonUtils.js';
 
-/* 資源：先試本機，再試線上（避免外網被擋） */
+/* 本機優先的示範資源 */
 const LOCAL_SAMPLE = {
   Walk: ["./motions/walk.bvh"],
   "Run (09_01)": ["./motions/run.bvh"]
 };
+/* 線上備援（如果本機沒有） */
 const REMOTE_SAMPLE = {
   Walk: [
     "https://raw.githubusercontent.com/una-dinosauria/cmu-mocap/master/data/007/07_01.bvh",
@@ -94,7 +95,7 @@ const SOLDIER_URLS = [
   "https://rawcdn.githack.com/mrdoob/three.js/r152/examples/models/gltf/Soldier.glb"
 ];
 
-/* DOM & 狀態 */
+/* DOM */
 const app = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const debugEl = document.getElementById("debug");
@@ -112,6 +113,7 @@ const togglePanelBtn = document.getElementById("togglePanel");
 const resetPoseBtn = document.getElementById("resetPoseBtn");
 const errorToast = document.getElementById("errorToast");
 
+/* 狀態 */
 let renderer, scene, camera, controls, clock = new THREE.Clock();
 let model, targetSkeleton, targetMesh;
 let mixerBones, mixerNodes;
@@ -172,7 +174,7 @@ async function init(){
   animate();
 }
 
-/* 載入角色 */
+/* 角色載入 */
 async function loadCharacterLocal(url){
   try{
     const head = await fetch(url,{method:"HEAD"}); if(!head.ok) throw new Error(`找不到 ${url}（HTTP ${head.status}）`);
@@ -245,7 +247,7 @@ function useLoadedCharacter(sceneObj, characterClips=[]){
   }
 }
 
-/* 綁定姿勢 */
+/* 綁定姿勢快照 */
 function captureBindPose(){
   if(!targetSkeleton) return;
   bindPose = targetSkeleton.bones.map(b=>({bone:b, p:b.position.clone(), q:b.quaternion.clone(), s:b.scale.clone()}));
@@ -261,14 +263,78 @@ function restoreBindPose(){
   setStatus("已還原綁定姿勢");
 }
 
+/* 名稱標準化與映射（支援 Hips / LHipJoint / LeftUpLeg… 轉 Mixamo） */
+function normName(n){
+  if(!n) return "";
+  n = String(n);
+  n = n.replace(/^mixamorig:/i, "").replace(/^armature[:_]?/i, "");
+  n = n.replace(/^(l_|lf_|lt_|l)(?=[A-Z])/i, "left")
+       .replace(/^(r_|rt_|r)(?=[A-Z])/i, "right");
+  n = n.toLowerCase().replace(/[^a-z]/g,"");
+  const syn = {
+    pelvis:"hips", root:"hips", hip:"hips", hips:"hips",
+    lowerback:"spine", abdomen:"spine", chest:"spine2", spine0:"spine",
+    neck1:"neck", neck2:"neck", headtop:"head",
+    clavicle:"shoulder", shldr:"shoulder", shoulder:"shoulder",
+    uparm:"upperarm", upperarm:"upperarm", arm:"arm",
+    lowarm:"forearm", forearm:"forearm", forearmtwist:"forearm",
+    hand:"hand", fingerbase:"hand", handindex1:"hand",
+    thigh:"upleg", upleg:"upleg", leg:"leg", shin:"leg", calf:"leg",
+    ball:"toebase", toe:"toebase", toebase:"toebase"
+  };
+  if(n==="lefthipjoint") n="leftupleg";
+  if(n==="righthipjoint") n="rightupleg";
+  if(n==="lefttoe") n="lefttoebase";
+  if(n==="righttoe") n="righttoebase";
+  if(syn[n]) n=syn[n];
+  return n;
+}
+function buildNameMap(srcBones, targetSkeleton){
+  const srcByNorm = new Map();
+  for(const b of srcBones){
+    const nb = normName(b.name);
+    if(nb && !srcByNorm.has(nb)) srcByNorm.set(nb, b.name);
+  }
+  const map = {};
+  for(const tb of targetSkeleton.bones){
+    const tname = tb.name;
+    const norm = normName(tname);
+    const tryKeys = [ norm, norm.replace(/^spine1$/,"spine").replace(/^spine3$/,"spine2") ];
+    let hit=null;
+    for(const k of tryKeys){ if(srcByNorm.has(k)){ hit=srcByNorm.get(k); break; } }
+    if(hit) map[tname] = hit;
+  }
+  return map;
+}
+function findSourceHipName(bones){
+  return (bones.find(b=>/^(hips?|pelvis|root)$/i.test(b.name))?.name) ||
+         (bones.find(b=>/hip/i.test(b.name))?.name) || bones[0].name || "Hips";
+}
+function guessHipName(skel){
+  const names = skel.bones.map(b=>b.name);
+  return ["Hips","mixamorig:Hips","hip","hips","Root","root"].find(n=>names.includes(n)) || names.find(n=>/hip/i.test(n)) || "Hips";
+}
+
+/* 從 GLTF 找來源 skeleton（就算沒 skinned mesh 也盡量組出來） */
+function findSourceSkeletonFromGLTF(root){
+  let skel=null;
+  root.traverse(o=>{ if(!skel && o.isSkinnedMesh && o.skeleton){ skel = o.skeleton; } });
+  if(skel) return skel;
+  const bones=[]; root.traverse(o=>{ if(o.isBone) bones.push(o); });
+  if(bones.length){
+    const roots = bones.filter(b=>!b.parent || !b.parent.isBone);
+    const ordered = [...roots, ...bones.filter(b=>!roots.includes(b))];
+    return new THREE.Skeleton(ordered);
+  }
+  return null;
+}
+
 /* 載入示範（先本機，再線上） */
 async function loadSampleBVHs(){
   if(!targetSkeleton){ showError("請先載入角色（建議 Soldier）"); return; }
   setStatus("載入示範 BVH…");
-
   let totalAdded = 0;
 
-  // 先試本機 ./motions
   for(const [name, urls] of Object.entries(LOCAL_SAMPLE)){
     let ok=false;
     for(const url of urls){
@@ -276,13 +342,10 @@ async function loadSampleBVHs(){
         const res = await new BVHLoader().loadAsync(url);
         const added = await addBVHAsBakedClip(res, name);
         if(added){ ok=true; totalAdded++; break; }
-      }catch(e){ /* 本機不存在就跳過 */ }
+      }catch(e){ /* 本機不存在就略過 */ }
     }
   }
-
-  // 若本機沒有，再試線上
-  const needRemote = totalAdded===0;
-  if(needRemote){
+  if(totalAdded===0){
     for(const [name, urls] of Object.entries(REMOTE_SAMPLE)){
       let ok=false;
       for(const url of urls){
@@ -290,9 +353,7 @@ async function loadSampleBVHs(){
           const res = await new BVHLoader().loadAsync(url);
           const added = await addBVHAsBakedClip(res, name);
           if(added){ ok=true; totalAdded++; break; }
-        }catch(e){
-          console.warn(`[BVH] 下載/解析失敗：${name} @ ${url}`, e);
-        }
+        }catch(e){ console.warn(`[BVH] 下載失敗：${name} @ ${url}`, e); }
       }
       if(!ok) console.warn(`[BVH] ${name} 所有候選皆未成功。`);
     }
@@ -303,27 +364,25 @@ async function loadSampleBVHs(){
   if(first){ motionSelect.value=first; switchToAction(first,0.0,true); }
 
   if(totalAdded===0){
-    showError("示範動作載入失敗（本機與線上皆未成功）。建議：在 repo 建立 /motions/ 資料夾，放入 walk.bvh / run.bvh 後再試，或用『上傳動作』載入本機檔。");
+    showError("示範動作載入失敗（本機與線上皆未成功）。請在 repo 放 /motions/walk.bvh 與 /motions/run.bvh，或用『上傳動作』。");
   }else{
     setStatus(`已載入 ${totalAdded} 支示範動作`);
   }
 }
 
-/* 上傳多個動作（強化版） */
+/* 上傳多個動作（.bvh/.glb） */
 async function loadMultipleMotions(files){
   if(!targetSkeleton){ showError("請先載入角色（建議 Soldier）"); return; }
-  let addedAny = false;
+  let addedAny=false;
 
   for(const f of files){
-    const name = f.name;
-    const ext = name.toLowerCase();
+    const name=f.name; const ext=name.toLowerCase();
     try{
       if(ext.endsWith('.bvh') || ext.endsWith('.bvh.txt')){
-        // 直接讀文字 + parse（避免某些裝置 objectURL/MIME 問題）
         const text = await readFileText(f);
         const res = new BVHLoader().parse(text);
         const ok = await addBVHAsBakedClip(res, name.replace(/\.(bvh(\.txt)?)$/i,''));
-        if(ok){ addedAny=true; }
+        if(ok) addedAny=true;
       }else if(ext.endsWith('.glb') || ext.endsWith('.gltf')){
         const url = URL.createObjectURL(f);
         try{
@@ -337,10 +396,8 @@ async function loadMultipleMotions(files){
             const baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clean, { hip, useTargetMatrix:true, preserveHipPosition:true });
             addAction(baked, `${name} / ${clip.name||("Clip"+idx)}`, 'bones');
           });
-          addedAny = true;
-        }finally{
-          URL.revokeObjectURL(url);
-        }
+          addedAny=true;
+        }finally{ URL.revokeObjectURL(url); }
       }else{
         showError(`不支援的格式：${name}`);
       }
@@ -356,8 +413,6 @@ async function loadMultipleMotions(files){
     setStatus("已載入上傳動作");
   }
 }
-
-/* 讀檔工具 */
 function readFileText(file){
   return new Promise((resolve,reject)=>{
     const fr = new FileReader();
@@ -367,25 +422,7 @@ function readFileText(file){
   });
 }
 
-/* 從 GLTF 場景找來源 skeleton（即使沒有 skinned mesh 也盡量組一個） */
-function findSourceSkeletonFromGLTF(root){
-  // 1) 優先找 skinned mesh 的 skeleton
-  let skel=null;
-  root.traverse(o=>{ if(!skel && o.isSkinnedMesh && o.skeleton){ skel = o.skeleton; } });
-  if(skel) return skel;
-  // 2) 沒有 skinned mesh：收集所有 Bone 節點，組成 Skeleton（沒有 inverses 也可用於 retargetClip）
-  const bones=[];
-  root.traverse(o=>{ if(o.isBone) bones.push(o); });
-  if(bones.length){
-    // 讓根骨在陣列前面
-    const roots = bones.filter(b=>!b.parent || !b.parent.isBone);
-    const ordered = [...roots, ...bones.filter(b=>!roots.includes(b))];
-    return new THREE.Skeleton(ordered);
-  }
-  return null;
-}
-
-/* BVH → Baked Clip（回傳是否成功） */
+/* BVH → Baked Clip（含骨名對照），回傳是否成功 */
 async function addBVHAsBakedClip(bvhResult, displayName){
   let bonesArray=null; const r=bvhResult;
   if (r.skeleton?.bones?.length) bonesArray=r.skeleton.bones;
@@ -398,28 +435,31 @@ async function addBVHAsBakedClip(bvhResult, displayName){
   let clip = (r.clip && typeof r.clip.clone==='function') ? r.clip.clone() : r.clip;
   if(!clip){ console.warn("[BVH] 無 clip：", displayName); return false; }
 
-  // 只保留來源 Hip 的 position（Y），避免漂移
+  // 只保留來源 hip 的 position（Y），避免飄移；若會清到 0 軌就保留原樣
   const srcHip = findSourceHipName(bonesArray);
-  clip.tracks = clip.tracks.filter(t => !t.name.endsWith(".position") || t.name === (srcHip + ".position"));
-  const hipPos = clip.tracks.find(t => t.name === (srcHip + ".position"));
+  let filtered = clip.tracks.filter(t=>!t.name.endsWith(".position") || t.name===(srcHip+".position"));
+  if(filtered.length===0) filtered = clip.tracks;
+  const hipPos = filtered.find(t=>t.name===(srcHip+".position"));
   if(hipPos){ const a=hipPos.values; for(let i=0;i<a.length;i+=3){ a[i]=0; a[i+2]=0; } }
+  clip = new THREE.AnimationClip(clip.name || displayName, clip.duration, filtered);
 
+  // 建對照表（target Mixamo 名 → 來源 BVH 名）
+  const nameMap = buildNameMap(bonesArray, targetSkeleton);
   const hip = guessHipName(targetSkeleton);
 
   let baked=null;
+  const a={ hip, useTargetMatrix:true,  preserveHipPosition:true, names:nameMap };
+  const b={ hip, useTargetMatrix:false, preserveHipPosition:true, names:nameMap };
   try{
-    baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip,
-      { hip, useTargetMatrix:true, preserveHipPosition:true });
-  }catch{
-    try{
-      baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip,
-        { hip, useTargetMatrix:false, preserveHipPosition:true });
-    }catch(e){
-      console.warn("[BVH] retargetClip 皆失敗：", displayName, e);
-      return false;
+    baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, a);
+    if(!baked || !isFinite(baked.duration) || baked.duration<=0){
+      baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, b);
     }
+  }catch(e){
+    try{ baked = SkeletonUtils.retargetClip(targetMesh, srcSkel, clip, b); }
+    catch(e2){ console.warn("[BVH] retargetClip 皆失敗：", displayName, e2); baked=null; }
   }
-  if(!baked || !isFinite(baked.duration) || baked.duration <= 0){
+  if(!baked || !isFinite(baked.duration) || baked.duration<=0){
     console.warn("[BVH] 重定向後 clip 無時長：", displayName);
     return false;
   }
@@ -428,17 +468,7 @@ async function addBVHAsBakedClip(bvhResult, displayName){
   return true;
 }
 
-/* 名稱工具 */
-function findSourceHipName(bones){
-  return (bones.find(b=>/^(hips?|pelvis|root)$/i.test(b.name))?.name) ||
-         (bones.find(b=>/hip/i.test(b.name))?.name) || bones[0].name || "Hips";
-}
-function guessHipName(skel){
-  const names = skel.bones.map(b=>b.name);
-  return ["Hips","mixamorig:Hips","hip","hips","Root","root"].find(n=>names.includes(n)) || names.find(n=>/hip/i.test(n)) || "Hips";
-}
-
-/* 動作管理 */
+/* 動作管理與播放 */
 function addAction(clip, name, mixerKind){
   const mixer = mixerKind==='nodes' ? mixerNodes : mixerBones;
   const action = mixer.clipAction(clip);
@@ -451,7 +481,6 @@ function addAction(clip, name, mixerKind){
   action.paused = false;
   actions.set(name, {action, mixer:mixerKind});
   updateMotionSelect();
-  // 若目前沒有在播，立刻切到這支
   if(!current || current.action.paused){ switchToAction(name,0.0,true); }
 }
 function updateMotionSelect(){
