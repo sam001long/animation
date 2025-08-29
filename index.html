@@ -25,13 +25,16 @@
     canvas { display:block; }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
     .fill { flex: 1 1 auto; }
+    /* 浮動按鈕 */
     #toggleUI{
       position:absolute; right:12px; top:12px; z-index:5;
       background:#0f131a; border:1px solid var(--line); color:#e7e9ee;
       padding:8px 10px; border-radius:10px;
       box-shadow:0 4px 16px rgba(0,0,0,.35);
     }
+    /* 桌面收起：向右滑出 */
     body.ui-hidden #ui { transform: translateX(100%); }
+    /* 手機（直向）版型：面板置頂，收起向上滑出 */
     @media (max-width: 900px) and (orientation: portrait) {
       #wrap { flex-direction: column; }
       #ui { width: 100%; border-left:none; border-top:1px solid var(--line); max-height: 46vh; }
@@ -40,7 +43,7 @@
     }
   </style>
 
-  <!-- Import maps（iOS/Safari 需要 es-module-shims） -->
+  <!-- Import maps（行動版 Safari 也 OK） -->
   <script defer src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
   <script type="importmap">
   {
@@ -127,7 +130,10 @@
     let mixer = null, activeAction = null;
     let root = null, skinned = null, skeleton = null, actions = [];
     let bindPose = null;
-    const offsets = new Map();
+
+    // 偏移參數與「基準四元數」（避免暫停時累積）
+    const offsets = new Map();     // boneName -> {ex,ey,ez,w}
+    const baseQuat = new Map();    // boneName -> Quaternion（動畫基準）
 
     const view = document.getElementById('view');
     const fileInput = document.getElementById('file');
@@ -241,7 +247,9 @@
       if(mixer){ mixer.stopAllAction(); mixer = null; }
       activeAction = null; actions = [];
       clipSel.innerHTML = '';
-      boneSel.innerHTML = ''; offsets.clear();
+      boneSel.innerHTML = '';
+      offsets.clear();
+      baseQuat.clear();           // ← 也把基準清掉
       bindPose = null;
       info.textContent = '已清空場景';
     }
@@ -296,6 +304,8 @@
         const opt = document.createElement('option'); opt.textContent='（未偵測到動畫）'; opt.disabled=true; opt.selected=true;
         clipSel.appendChild(opt);
       }
+
+      snapshotBase(); // 初次快照一次
       resetCamera();
     }
 
@@ -304,6 +314,7 @@
       if (activeAction) activeAction.stop();
       activeAction = actions[idx].action;
       activeAction.reset().play();
+      snapshotBase(); // 切換片段時也重設基準
     }
 
     function setLoop(mode){
@@ -324,6 +335,15 @@
         t.b.quaternion.copy(t.q);
         t.b.scale.copy(t.s);
         t.b.updateMatrix(); t.b.updateMatrixWorld(true);
+      }
+      snapshotBase(); // 綁定姿勢後重設基準
+    }
+
+    // ---- 以「動畫基準」為底的快照（避免暫停累積）----
+    function snapshotBase(){
+      if (!skeleton) return;
+      for (const b of skeleton.bones){
+        baseQuat.set(b.name, b.quaternion.clone());
       }
     }
 
@@ -385,6 +405,7 @@
     function buildBoneList(skel){
       boneSel.innerHTML='';
       offsets.clear();
+      baseQuat.clear();
       const names = skel.bones.map(b=>b.name).sort((a,b)=> headToToeOrder(a)-headToToeOrder(b) || a.localeCompare(b));
       for(const n of names){
         const opt = document.createElement('option');
@@ -408,6 +429,7 @@
       o.ex = Number(pitch.value); o.ey = Number(yaw.value); o.ez = Number(roll.value); o.w = Number(weight.value);
     }
 
+    // ---- 每幀：先讓動畫更新，然後以「基準 * 偏移」覆寫（暫停不累積）----
     const tmpQ = new THREE.Quaternion();
     const offQ = new THREE.Quaternion();
     const eul  = new THREE.Euler();
@@ -416,19 +438,28 @@
     function animate(){
       requestAnimationFrame(animate);
       const dt = clock.getDelta();
-      if (mixer) mixer.update(dt);
-      if (skeleton && offsets.size){
-        for (const [name, o] of offsets){
-          if (o.w <= 0) continue;
-          const bone = skeleton.bones.find(b => b.name === name);
-          if (!bone) continue;
-          tmpQ.copy(bone.quaternion);
-          eul.set(d2r(o.ex), d2r(o.ey), d2r(o.ez), 'XYZ');
-          offQ.setFromEuler(eul);
-          tmpQ.multiply(offQ);
-          bone.quaternion.slerp(tmpQ, o.w);
+
+      const playing = activeAction && !activeAction.paused;
+      if (mixer) mixer.update(dt);          // 先讓動畫寫進骨頭
+      if (skeleton){
+        if (playing) snapshotBase();        // 只有播放時更新「基準」
+        if (offsets.size){
+          for (const [name, o] of offsets){
+            if (o.w <= 0) continue;
+            const bone = skeleton.bones.find(b => b.name === name);
+            if (!bone) continue;
+
+            const base = baseQuat.get(name) || bone.quaternion; // 沒基準時就用目前值
+            eul.set(d2r(o.ex), d2r(o.ey), d2r(o.ez), 'XYZ');
+            offQ.setFromEuler(eul);
+
+            // 目標 = 基準 * 偏移；從基準插到目標 → 不會累積
+            tmpQ.copy(base).multiply(offQ);
+            bone.quaternion.copy(base).slerp(tmpQ, o.w);
+          }
         }
       }
+
       controls.update();
       renderer.render(scene, camera);
     }
