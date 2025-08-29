@@ -34,10 +34,19 @@
     }
     /* 桌面收起：向右滑出 */
     body.ui-hidden #ui { transform: translateX(100%); }
-    /* 手機（直向）版型：面板置頂，收起向上滑出 */
+
+    /* 手機（直向）版型：面板置頂，收起向上滑出，且排到最上面 */
     @media (max-width: 900px) and (orientation: portrait) {
       #wrap { flex-direction: column; }
-      #ui { width: 100%; border-left:none; border-top:1px solid var(--line); max-height: 46vh; }
+      #ui {
+        order: -1;                  /* ← 讓選單排到最上面 */
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--line);
+        max-height: 46vh;
+        position: relative;
+        z-index: 2;                 /* 確保不被 3D 畫面蓋住 */
+      }
       body.ui-hidden #ui { transform: translateY(-100%); }
       #toggleUI{ right:12px; top:12px; }
     }
@@ -249,7 +258,7 @@
       clipSel.innerHTML = '';
       boneSel.innerHTML = '';
       offsets.clear();
-      baseQuat.clear();           // ← 也把基準清掉
+      baseQuat.clear();           // 把基準也清掉
       bindPose = null;
       info.textContent = '已清空場景';
     }
@@ -339,7 +348,7 @@
       snapshotBase(); // 綁定姿勢後重設基準
     }
 
-    // ---- 以「動畫基準」為底的快照（避免暫停累積）----
+    // 以「動畫基準」為底的快照（避免暫停累積）
     function snapshotBase(){
       if (!skeleton) return;
       for (const b of skeleton.bones){
@@ -429,7 +438,7 @@
       o.ex = Number(pitch.value); o.ey = Number(yaw.value); o.ez = Number(roll.value); o.w = Number(weight.value);
     }
 
-    // ---- 每幀：先讓動畫更新，然後以「基準 * 偏移」覆寫（暫停不累積）----
+    // ---- 每幀：以「基準 * 偏移」覆寫（暫停不累積）----
     const tmpQ = new THREE.Quaternion();
     const offQ = new THREE.Quaternion();
     const eul  = new THREE.Euler();
