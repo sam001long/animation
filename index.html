@@ -10,7 +10,7 @@
     html, body { margin:0; height:100%; background:var(--bg); color:#e7e9ee; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", "Helvetica Neue", Arial;}
     #wrap { display:flex; height:100%; }
     #view { position:relative; flex: 1 1 auto; }
-    #ui { width: 360px; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; overflow:auto; }
+    #ui { width: 360px; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; overflow:auto; transition: transform .2s ease; }
     h2 { margin: 6px 0 10px; font-size: 14px; letter-spacing:.02em; }
     .block { padding-bottom: 12px; margin-bottom: 12px; border-bottom:1px dashed var(--line); }
     .row { display:flex; align-items:center; gap:8px; margin:8px 0; }
@@ -25,6 +25,20 @@
     canvas { display:block; }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
     .fill { flex: 1 1 auto; }
+    /* 浮動按鈕 */
+    #toggleUI{
+      position:absolute; right:12px; top:12px; z-index:5;
+      background:#0f131a; border:1px solid var(--line); color:#e7e9ee;
+      padding:8px 10px; border-radius:10px;
+      box-shadow:0 4px 16px rgba(0,0,0,.35);
+    }
+    /* 收起時：把右側面板移出畫面 */
+    body.ui-hidden #ui { transform: translateX(100%); }
+    /* 手機優化：小寬度時，預設收起 */
+    @media (max-width: 900px){
+      body:not(.ui-shown) #ui { transform: translateX(100%); }
+      #toggleUI{ right:12px; top:12px; }
+    }
   </style>
 
   <!-- Import maps（讓 'three' 與其 addons 能被瀏覽器解析） -->
@@ -38,9 +52,10 @@
   }
   </script>
 </head>
-<body>
+<body class="ui-shown">
   <div id="wrap">
     <div id="view">
+      <button id="toggleUI" aria-label="切換功能選單">隱藏選單</button>
       <div id="drop">拖放 .glb 檔到這裡</div>
     </div>
     <div id="ui">
@@ -122,6 +137,7 @@
     const info = document.getElementById('info');
     const drop = document.getElementById('drop');
     const toast = document.getElementById('toast');
+    const toggleUIBtn = document.getElementById('toggleUI');
 
     const clipSel = document.getElementById('clip');
     const btnPlay = document.getElementById('btnPlay');
@@ -186,6 +202,17 @@
       btnResetBone.addEventListener('click', ()=>{ const o = offsets.get(boneSel.value); if(o){ o.ex=o.ey=o.ez=0; o.w=1; } syncUIFromBone(); });
       btnResetAll.addEventListener('click', ()=>{ offsets.forEach(o=>{ o.ex=o.ey=o.ez=0; o.w=1; }); syncUIFromBone(); });
       btnResetPose.addEventListener('click', restoreBindPose);
+
+      toggleUIBtn.addEventListener('click', ()=>{
+        const hidden = document.body.classList.toggle('ui-hidden');
+        toggleUIBtn.textContent = hidden ? '顯示選單' : '隱藏選單';
+      });
+
+      // 手機預設收起
+      if (window.innerWidth < 900) {
+        document.body.classList.add('ui-hidden');
+        toggleUIBtn.textContent = '顯示選單';
+      }
 
       info.textContent = '請載入 .glb（需包含骨架；可有動畫）';
     }
@@ -261,7 +288,7 @@
         });
         clipSel.innerHTML='';
         actions.forEach((a,i)=>{
-          const opt = document.createElement('option'); opt.value=i; opt.textContent=a.name; clipSelect.appendChild(opt);
+          const opt = document.createElement('option'); opt.value=i; opt.textContent=a.name; clipSel.appendChild(opt);
         });
         clipSel.onchange = ()=> chooseClip(Number(clipSel.value));
         chooseClip(0);
