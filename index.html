@@ -10,7 +10,7 @@
     html, body { margin:0; height:100%; background:var(--bg); color:#e7e9ee; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", "Helvetica Neue", Arial;}
     #wrap { display:flex; height:100%; }
     #view { position:relative; flex: 1 1 auto; }
-    #ui { width: 360px; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; overflow:auto; transition: transform .2s ease; }
+    #ui { width: 360px; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; overflow:auto; transition: transform .25s ease; }
     h2 { margin: 6px 0 10px; font-size: 14px; letter-spacing:.02em; }
     .block { padding-bottom: 12px; margin-bottom: 12px; border-bottom:1px dashed var(--line); }
     .row { display:flex; align-items:center; gap:8px; margin:8px 0; }
@@ -32,14 +32,16 @@
       box-shadow:0 4px 16px rgba(0,0,0,.35);
     }
     body.ui-hidden #ui { transform: translateX(100%); }
-    @media (max-width: 900px){
-      body:not(.ui-shown) #ui { transform: translateX(100%); }
+    @media (max-width: 900px) and (orientation: portrait) {
+      #wrap { flex-direction: column; }
+      #ui { width: 100%; border-left:none; border-top:1px solid var(--line); max-height: 46vh; }
+      body.ui-hidden #ui { transform: translateY(-100%); }
       #toggleUI{ right:12px; top:12px; }
     }
   </style>
 
-  <!-- Import maps -->
-  <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+  <!-- Import maps（iOS/Safari 需要 es-module-shims） -->
+  <script defer src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
   <script type="importmap">
   {
     "imports": {
@@ -49,7 +51,7 @@
   }
   </script>
 </head>
-<body class="ui-shown">
+<body>
   <div id="wrap">
     <div id="view">
       <button id="toggleUI" aria-label="切換功能選單">隱藏選單</button>
@@ -204,7 +206,7 @@
         const hidden = document.body.classList.toggle('ui-hidden');
         toggleUIBtn.textContent = hidden ? '顯示選單' : '隱藏選單';
       });
-      if (window.innerWidth < 900) {
+      if (matchMedia('(max-width: 900px) and (orientation: portrait)').matches) {
         document.body.classList.add('ui-hidden');
         toggleUIBtn.textContent = '顯示選單';
       }
@@ -325,33 +327,36 @@
       }
     }
 
-    // ---- 中文標籤與排序 ----
-    function norm(n){ return n.toLowerCase().replace(/^armature\|/,'').replace(/^mixamorig:/,'').replace(/[^a-z]/g,''); }
+    // ---- 中文標籤與排序（含手指）----
+    function norm(n){ return n.toLowerCase().replace(/^armature\|/,'').replace(/^mixamorig:/,'').replace(/[^a-z0-9]/g,''); }
     function zhLabel(name){
       const n = norm(name);
       const side = n.includes('left') ? '左' : (n.includes('right') ? '右' : '');
-      const map = [
-        ['head','頭'], ['neck','頸'],
-        ['chest','胸'], ['spine2','脊椎（上）'], ['spine1','脊椎（中）'], ['spine','脊椎'],
+      const seg = (n.match(/(thumb|index|middle|ring|pinky)\D*(\d)/)?.[2]) || '';
+      if (n.includes('thumb'))  return side+'拇指'+seg;
+      if (n.includes('index'))  return side+'食指'+seg;
+      if (n.includes('middle')) return side+'中指'+seg;
+      if (n.includes('ring'))   return side+'無名指'+seg;
+      if (n.includes('pinky'))  return side+'小指'+seg;
+      const dict = [
+        ['head','頭部'], ['neck','頸部'],
+        ['chest','胸腔'], ['spine2','胸椎上'], ['spine1','胸椎下'], ['spine','腰椎'],
         ['hips','骨盆'], ['pelvis','骨盆'],
-        ['shoulder','肩'],
+        ['shoulder','鎖骨'],
         ['upperarm','上臂'], ['arm','上臂'],
         ['forearm','前臂'],
         ['hand','手'],
         ['upleg','大腿'], ['thigh','大腿'],
         ['leg','小腿'], ['calf','小腿'],
         ['foot','腳'],
-        ['toebase','腳趾'], ['toe','腳趾']
+        ['toebase','腳趾根'], ['toe','腳趾']
       ];
-      for(const [k, zh] of map){
-        if(n.includes(k)){
-          if(zh==='肩' || zh==='上臂' || zh==='前臂' || zh==='手' || zh==='大腿' || zh==='小腿' || zh==='腳' || zh==='腳趾'){
-            return side + zh;
-          }
+      for (const [k, zh] of dict){
+        if (n.includes(k)){
+          if (/鎖骨|上臂|前臂|手|大腿|小腿|腳|趾/.test(zh)) return side + zh;
           return zh;
         }
       }
-      // 未命中的：去前綴後原名
       return name.replace(/^Armature\|/,'').replace(/^mixamorig:/,'');
     }
     function headToToeOrder(name){
@@ -364,10 +369,15 @@
         ['leftupperarm', 50], ['rightupperarm', 51], ['leftarm', 52], ['rightarm', 53],
         ['leftforearm', 60], ['rightforearm', 61],
         ['lefthand', 70], ['righthand', 71],
-        ['leftupleg', 80], ['rightupleg', 81], ['leftthigh',82], ['rightthigh',83],
-        ['leftleg', 90], ['rightleg', 91], ['leftcalf',92], ['rightcalf',93],
-        ['leftfoot', 100], ['rightfoot', 101],
-        ['lefttoebase', 110], ['righttoebase', 111], ['lefttoe',112], ['righttoe',113]
+        ['leftthumb', 72], ['rightthumb', 73],
+        ['leftindex', 74], ['rightindex', 75],
+        ['leftmiddle', 76], ['rightmiddle', 77],
+        ['leftring', 78], ['rightring', 79],
+        ['leftpinky', 80], ['rightpinky', 81],
+        ['leftupleg', 90], ['rightupleg', 91], ['leftthigh',92], ['rightthigh',93],
+        ['leftleg', 100], ['rightleg', 101], ['leftcalf',102], ['rightcalf',103],
+        ['leftfoot', 110], ['rightfoot', 111],
+        ['lefttoebase', 120], ['righttoebase', 121], ['lefttoe',122], ['righttoe',123]
       ];
       for (const [k, r] of order){ if (n.includes(k)) return r; }
       return 500;
@@ -378,9 +388,9 @@
       const names = skel.bones.map(b=>b.name).sort((a,b)=> headToToeOrder(a)-headToToeOrder(b) || a.localeCompare(b));
       for(const n of names){
         const opt = document.createElement('option');
-        opt.value = n;                   // 內部仍用原始骨名
-        opt.textContent = zhLabel(n);   // 顯示中文
-        opt.title = n;                  // hover 時可看到原名
+        opt.value = n;
+        opt.textContent = zhLabel(n);
+        opt.title = n;
         boneSel.appendChild(opt);
         offsets.set(n, {ex:0, ey:0, ez:0, w:1});
       }
@@ -398,7 +408,6 @@
       o.ex = Number(pitch.value); o.ey = Number(yaw.value); o.ez = Number(roll.value); o.w = Number(weight.value);
     }
 
-    // ---- 每幀覆寫 ----
     const tmpQ = new THREE.Quaternion();
     const offQ = new THREE.Quaternion();
     const eul  = new THREE.Euler();
