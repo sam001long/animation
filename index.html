@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GLB 播放器（只支援 GLB）＋骨架滑桿控制</title>
+  <title>GLB 播放器（GLB 專用）＋骨架滑桿控制</title>
   <style>
     :root { --bg:#0b0e13; --panel:#12161f; --muted:#94a3b8; --line:#243044; --accent:#6aa1ff; }
     *{box-sizing:border-box}
@@ -26,6 +26,17 @@
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
     .fill { flex: 1 1 auto; }
   </style>
+
+  <!-- Import maps（讓 'three' 與其 addons 能被瀏覽器解析） -->
+  <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="wrap">
@@ -94,18 +105,16 @@
   <div id="toast"></div>
 
   <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.158.0/build/three.module.js';
-    import { OrbitControls } from 'https://unpkg.com/three@0.158.0/examples/jsm/controls/OrbitControls.js';
-    import { GLTFLoader } from 'https://unpkg.com/three@0.158.0/examples/jsm/loaders/GLTFLoader.js';
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-    // 基礎變數
     let scene, camera, renderer, controls, clock;
     let mixer = null, activeAction = null;
     let root = null, skinned = null, skeleton = null, actions = [];
     let bindPose = null;
-    const offsets = new Map(); // boneName -> {ex,ey,ez,w}
+    const offsets = new Map();
 
-    // DOM
     const view = document.getElementById('view');
     const fileInput = document.getElementById('file');
     const btnResetCam = document.getElementById('btnResetCam');
@@ -148,7 +157,6 @@
       controls.target.set(0, 1.2, 0);
       controls.enableDamping = true;
 
-      // 燈光/地面
       scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 0.85));
       const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(3,5,2);
       scene.add(dir);
@@ -156,7 +164,6 @@
 
       addEventListener('resize', onResize);
 
-      // 檔案選擇與拖放
       fileInput.addEventListener('change', e => {
         const f = e.target.files?.[0]; if (f) loadGLBFile(f);
       });
@@ -167,16 +174,13 @@
         if (f && /\.glb$/i.test(f.name)) loadGLBFile(f);
       });
 
-      // 播放控制
       btnPlay.addEventListener('click', ()=>{ if(activeAction){ activeAction.paused = !activeAction.paused; } });
       speed.addEventListener('input', ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
       loopSel.addEventListener('change', ()=> setLoop(loopSel.value));
 
-      // 相機/清空
       btnResetCam.addEventListener('click', resetCamera);
       btnClear.addEventListener('click', clearScene);
 
-      // 骨頭控制
       boneSel.addEventListener('change', syncUIFromBone);
       for(const el of [pitch,yaw,roll,weight]) el.addEventListener('input', applyUIToBone);
       btnResetBone.addEventListener('click', ()=>{ const o = offsets.get(boneSel.value); if(o){ o.ex=o.ey=o.ez=0; o.w=1; } syncUIFromBone(); });
@@ -240,7 +244,6 @@
     function useGLTF(sceneObj, clips){
       root = sceneObj;
       scene.add(root);
-      // 找 skinned mesh
       root.traverse(o=>{ if(o.isSkinnedMesh && !skinned) skinned = o; });
       if (!skinned) { showToast('⚠️ 未找到 SkinnedMesh（此 GLB 可能沒有骨架/權重）'); }
       else {
@@ -249,7 +252,6 @@
         captureBindPose();
       }
 
-      // 動畫
       actions = [];
       if (clips && clips.length){
         mixer = new THREE.AnimationMixer(root);
@@ -257,10 +259,9 @@
           const act = mixer.clipAction(clip, root);
           actions.push({ name: clip.name || ('片段'+i), action: act });
         });
-        // 填下拉
         clipSel.innerHTML='';
         actions.forEach((a,i)=>{
-          const opt = document.createElement('option'); opt.value=i; opt.textContent=a.name; clipSel.appendChild(opt);
+          const opt = document.createElement('option'); opt.value=i; opt.textContent=a.name; clipSelect.appendChild(opt);
         });
         clipSel.onchange = ()=> chooseClip(Number(clipSel.value));
         chooseClip(0);
@@ -288,7 +289,6 @@
       else { activeAction.setLoop(THREE.LoopRepeat,Infinity); activeAction.clampWhenFinished=false; }
     }
 
-    // --- 綁定姿勢 ---
     function captureBindPose(){
       if(!skeleton) return;
       bindPose = skeleton.bones.map(b=>({ b, p:b.position.clone(), q:b.quaternion.clone(), s:b.scale.clone() }));
@@ -303,15 +303,11 @@
       }
     }
 
-    // --- 骨頭清單（頭 → 腳 的排序）---
     function norm(n){ return n.toLowerCase().replace(/^armature\|/,'').replace(/^mixamorig:/,'').replace(/[^a-z]/g,''); }
     function headToToeOrder(name){
       const n = norm(name);
-      const rank = (key, r)=> n.includes(key) ? r : 999;
-      // 越小越優先：頭→頸→胸→脊→骨盆→肩→上臂→前臂→手→腿→腳→趾
       const order = [
-        ['head', 0],
-        ['neck', 10],
+        ['head', 0], ['neck', 10],
         ['chest', 20], ['spine2', 21], ['spine1', 22], ['spine', 23],
         ['hips', 30], ['pelvis', 31],
         ['leftshoulder', 40], ['rightshoulder', 41],
@@ -324,7 +320,7 @@
         ['lefttoebase', 110], ['righttoebase', 111], ['lefttoe',112], ['righttoe',113]
       ];
       for (const [k, r] of order){ if (n.includes(k)) return r; }
-      return 500; // 其他放中間
+      return 500;
     }
     function buildBoneList(skel){
       boneSel.innerHTML='';
@@ -348,7 +344,6 @@
       o.ex = Number(pitch.value); o.ey = Number(yaw.value); o.ez = Number(roll.value); o.w = Number(weight.value);
     }
 
-    // --- 每幀覆寫骨頭姿勢（在 mixer.update 之後） ---
     const tmpQ = new THREE.Quaternion();
     const offQ = new THREE.Quaternion();
     const eul  = new THREE.Euler();
@@ -358,7 +353,6 @@
       requestAnimationFrame(animate);
       const dt = clock.getDelta();
       if (mixer) mixer.update(dt);
-
       if (skeleton && offsets.size){
         for (const [name, o] of offsets){
           if (o.w <= 0) continue;
@@ -367,11 +361,10 @@
           tmpQ.copy(bone.quaternion);
           eul.set(d2r(o.ex), d2r(o.ey), d2r(o.ez), 'XYZ');
           offQ.setFromEuler(eul);
-          tmpQ.multiply(offQ);                // 目標 = 原動畫 * 偏移
-          bone.quaternion.slerp(tmpQ, o.w);   // 權重 0..1
+          tmpQ.multiply(offQ);
+          bone.quaternion.slerp(tmpQ, o.w);
         }
       }
-
       controls.update();
       renderer.render(scene, camera);
     }
