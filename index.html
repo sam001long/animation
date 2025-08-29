@@ -25,23 +25,20 @@
     canvas { display:block; }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
     .fill { flex: 1 1 auto; }
-    /* 浮動按鈕 */
     #toggleUI{
       position:absolute; right:12px; top:12px; z-index:5;
       background:#0f131a; border:1px solid var(--line); color:#e7e9ee;
       padding:8px 10px; border-radius:10px;
       box-shadow:0 4px 16px rgba(0,0,0,.35);
     }
-    /* 收起時：把右側面板移出畫面 */
     body.ui-hidden #ui { transform: translateX(100%); }
-    /* 手機優化：小寬度時，預設收起 */
     @media (max-width: 900px){
       body:not(.ui-shown) #ui { transform: translateX(100%); }
       #toggleUI{ right:12px; top:12px; }
     }
   </style>
 
-  <!-- Import maps（讓 'three' 與其 addons 能被瀏覽器解析） -->
+  <!-- Import maps -->
   <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
   <script type="importmap">
   {
@@ -207,8 +204,6 @@
         const hidden = document.body.classList.toggle('ui-hidden');
         toggleUIBtn.textContent = hidden ? '顯示選單' : '隱藏選單';
       });
-
-      // 手機預設收起
       if (window.innerWidth < 900) {
         document.body.classList.add('ui-hidden');
         toggleUIBtn.textContent = '顯示選單';
@@ -330,7 +325,35 @@
       }
     }
 
+    // ---- 中文標籤與排序 ----
     function norm(n){ return n.toLowerCase().replace(/^armature\|/,'').replace(/^mixamorig:/,'').replace(/[^a-z]/g,''); }
+    function zhLabel(name){
+      const n = norm(name);
+      const side = n.includes('left') ? '左' : (n.includes('right') ? '右' : '');
+      const map = [
+        ['head','頭'], ['neck','頸'],
+        ['chest','胸'], ['spine2','脊椎（上）'], ['spine1','脊椎（中）'], ['spine','脊椎'],
+        ['hips','骨盆'], ['pelvis','骨盆'],
+        ['shoulder','肩'],
+        ['upperarm','上臂'], ['arm','上臂'],
+        ['forearm','前臂'],
+        ['hand','手'],
+        ['upleg','大腿'], ['thigh','大腿'],
+        ['leg','小腿'], ['calf','小腿'],
+        ['foot','腳'],
+        ['toebase','腳趾'], ['toe','腳趾']
+      ];
+      for(const [k, zh] of map){
+        if(n.includes(k)){
+          if(zh==='肩' || zh==='上臂' || zh==='前臂' || zh==='手' || zh==='大腿' || zh==='小腿' || zh==='腳' || zh==='腳趾'){
+            return side + zh;
+          }
+          return zh;
+        }
+      }
+      // 未命中的：去前綴後原名
+      return name.replace(/^Armature\|/,'').replace(/^mixamorig:/,'');
+    }
     function headToToeOrder(name){
       const n = norm(name);
       const order = [
@@ -354,7 +377,11 @@
       offsets.clear();
       const names = skel.bones.map(b=>b.name).sort((a,b)=> headToToeOrder(a)-headToToeOrder(b) || a.localeCompare(b));
       for(const n of names){
-        const opt = document.createElement('option'); opt.value=n; opt.textContent=n; boneSel.appendChild(opt);
+        const opt = document.createElement('option');
+        opt.value = n;                   // 內部仍用原始骨名
+        opt.textContent = zhLabel(n);   // 顯示中文
+        opt.title = n;                  // hover 時可看到原名
+        boneSel.appendChild(opt);
         offsets.set(n, {ex:0, ey:0, ez:0, w:1});
       }
       boneSel.value = names[0] || '';
@@ -371,6 +398,7 @@
       o.ex = Number(pitch.value); o.ey = Number(yaw.value); o.ez = Number(roll.value); o.w = Number(weight.value);
     }
 
+    // ---- 每幀覆寫 ----
     const tmpQ = new THREE.Quaternion();
     const offQ = new THREE.Quaternion();
     const eul  = new THREE.Euler();
