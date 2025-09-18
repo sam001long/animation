@@ -2,100 +2,497 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Motion Player</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GLB 播放器（GLB 專用）＋骨架滑桿控制</title>
   <style>
-    body{margin:0;background:#0b1020;color:#e6eefc;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans TC",sans-serif}
-    header{padding:12px 16px;background:#11162a;border-bottom:1px solid #24304f;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-    select,button{background:#091126;color:#e6eefc;border:1px solid #223058;border-radius:10px;padding:8px 10px}
-    .wrap{display:grid;grid-template-columns:1fr;grid-auto-rows:minmax(0,1fr);height:calc(100vh - 56px)}
-    #c{width:100%;height:100%;display:block}
-    .muted{color:#9fb0d4;font-size:12px}
+    :root { --bg:#0b0e13; --panel:#12161f; --muted:#94a3b8; --line:#243044; --accent:#6aa1ff; }
+    *{box-sizing:border-box}
+    html, body { margin:0; height:100%; background:var(--bg); color:#e7e9ee; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", "Helvetica Neue", Arial;}
+    #wrap { display:flex; height:100%; }
+    #view { position:relative; flex: 1 1 auto; }
+    #ui { width: 360px; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; overflow:auto; transition: transform .25s ease; }
+    h2 { margin: 6px 0 10px; font-size: 14px; letter-spacing:.02em; }
+    .block { padding-bottom: 12px; margin-bottom: 12px; border-bottom:1px dashed var(--line); }
+    .row { display:flex; align-items:center; gap:8px; margin:8px 0; }
+    .row label { flex: 0 0 88px; font-size: 12px; color: var(--muted); }
+    select, button { background:#0f131a; border:1px solid var(--line); color:#e7e9ee; border-radius:8px; padding:8px 10px; }
+    button:hover{ border-color:#3b4a6b; cursor:pointer }
+    input[type="file"], select, button, input[type="range"] { accent-color: var(--accent); }
+    input[type="range"] { width: 100%; }
+    .small { font-size:12px; color: var(--muted); }
+    #drop { position:absolute; inset:10px; border:2px dashed var(--line); border-radius:12px; display:none; align-items:center; justify-content:center; color:var(--muted); background:rgba(0,0,0,.15); pointer-events:none;}
+    #toast { position: fixed; right: 12px; bottom: 12px; background:#2a1320; border:1px solid #5e2940; color:#ffd6e7; padding:10px 12px; border-radius:10px; display:none; white-space:pre-wrap; max-width:min(92vw,540px); }
+    canvas { display:block; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+    .fill { flex: 1 1 auto; }
+
+    /* 浮動按鈕 */
+    #toggleUI{
+      position:absolute; right:12px; top:12px; z-index:1001;
+      background:#0f131a; border:1px solid var(--line); color:#e7e9ee;
+      padding:8px 10px; border-radius:10px;
+      box-shadow:0 4px 16px rgba(0,0,0,.35);
+    }
+
+    /* 桌面：收起從右側滑走 */
+    body.ui-hidden #ui { transform: translateX(100%); }
+
+    /* 手機直立：面板改為頂部浮層，收起往上滑出；滑桿加大、單欄滿版 */
+    @media (max-width: 900px) and (orientation: portrait) {
+      #wrap { flex-direction: column; }
+      #ui {
+        position: fixed;
+        left: 0; right: 0;
+        top: calc(env(safe-area-inset-top, 0px) + 0px);
+        width: 100%;
+        max-height: 65vh;        /* 面板可視高度（可自行調整） */
+        overflow: auto;
+        border-left: none;
+        border-top: 1px solid var(--line);
+        transform: translateY(-105%);   /* 收起 */
+        z-index: 1000;
+        background: var(--panel);
+      }
+      body:not(.ui-hidden) #ui { transform: translateY(0); } /* 展開 */
+      #toggleUI{
+        position: fixed;
+        right: 12px;
+        top: calc(env(safe-area-inset-top, 0px) + 12px);
+      }
+      .grid { grid-template-columns: 1fr; }  /* 手機上每條滑桿獨佔一行，拉滿寬 */
+      /* 放大滑桿與拇指（iOS/Safari） */
+      input[type="range"]{ height: 36px; }
+      input[type="range"]::-webkit-slider-runnable-track{ height: 10px; border-radius: 999px; }
+      input[type="range"]::-webkit-slider-thumb{
+        -webkit-appearance:none; width: 28px; height: 28px; margin-top: -9px; border-radius:50%;
+        border: 1px solid #334155; background:#e7e9ee;
+      }
+    }
   </style>
-</head>
-<body>
-  <header>
-    <div class="muted">模型：</div>
-    <span class="muted">animation/assets/model.glb</span>
-    <div style="flex:1"></div>
-    <label class="muted">動作：</label>
-    <select id="motion"></select>
-    <button id="reload">重載清單</button>
-  </header>
-  <div class="wrap">
-    <canvas id="c"></canvas>
-  </div>
 
-  <!-- three.js 基本與 GLTFLoader -->
-  <script src="https://unpkg.com/three@0.161.0/build/three.min.js"></script>
-  <script src="https://unpkg.com/three@0.161.0/examples/js/loaders/GLTFLoader.js"></script>
-
-  <script>
-  const canvas = document.getElementById('c');
-  const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b1020);
-
-  const camera = new THREE.PerspectiveCamera(50, 16/9, 0.1, 100);
-  camera.position.set(0, 1.4, 2);
-
-  const light = new THREE.HemisphereLight(0xffffff, 0x222233, 1.2);
-  scene.add(light);
-
-  let model, mixer, clock = new THREE.Clock();
-
-  function resize(){
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (canvas.width !== w || canvas.height !== h) {
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
+  <!-- Import maps（行動版 Safari 也 OK） -->
+  <script defer src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
     }
   }
+  </script>
+</head>
+<body class="ui-hidden"><!-- 手機直立預設收起 -->
+  <div id="wrap">
+    <div id="view">
+      <button id="toggleUI" aria-label="切換功能選單">顯示選單</button>
+      <div id="drop">拖放 .glb 檔到這裡</div>
+    </div>
+    <div id="ui" role="dialog" aria-label="功能選單">
+      <div class="block">
+        <h2>載入 GLB（只支援 GLB）</h2>
+        <div class="row">
+          <label>選擇檔案</label>
+          <input id="file" type="file" accept=".glb" />
+        </div>
+        <div class="row">
+          <button id="btnResetCam">重設相機</button>
+          <button id="btnClear">清空場景</button>
+        </div>
+        <div class="row small"><span id="info">尚未載入</span></div>
+      </div>
 
-  // 載入模型
-  const gltfLoader = new THREE.GLTFLoader();
-  gltfLoader.load('./assets/model.glb', (gltf)=>{
-    model = gltf.scene;
-    model.traverse(o=>{ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
-    scene.add(model);
-    mixer = new THREE.AnimationMixer(model);
-  }, undefined, (err)=>console.error('Load model error:', err));
+      <div class="block">
+        <h2>動畫播放</h2>
+        <div class="row">
+          <label>片段</label>
+          <select id="clip"></select>
+        </div>
+        <div class="row">
+          <label>控制</label>
+          <button id="btnPlay">播放/暫停</button>
+          <span class="fill"></span>
+          <label style="flex:0 0 auto;">速度</label>
+          <input id="speed" type="range" min="0" max="2" step="0.01" value="1">
+        </div>
+        <div class="row">
+          <label>循環</label>
+          <select id="loop">
+            <option value="repeat">重複</option>
+            <option value="once">一次</option>
+            <option value="pingpong">來回</option>
+          </select>
+        </div>
+      </div>
 
-  async function loadMotionList(){
-    const res = await fetch('./motions/index.json', {cache:'no-store'});
-    const data = await res.json();
-    const sel = document.getElementById('motion');
-    sel.innerHTML = (data.items||[]).map(x=>`<option value="${x.file}">${x.label}</option>`).join('');
-    return data.items||[];
-  }
+      <div class="block">
+        <h2>骨架控制（每幀覆寫，不改原動畫）</h2>
+        <div class="row">
+          <label>骨頭</label>
+          <select id="bone"></select>
+        </div>
+        <div class="grid">
+          <div class="row"><label>俯仰 Pitch</label><input id="pitch" type="range" min="-180" max="180" step="1" value="0"></div>
+          <div class="row"><label>偏航 Yaw</label><input id="yaw" type="range" min="-180" max="180" step="1" value="0"></div>
+          <div class="row"><label>翻滾 Roll</label><input id="roll" type="range" min="-180" max="180" step="1" value="0"></div>
+          <div class="row"><label>權重</label><input id="weight" type="range" min="0" max="1" step="0.01" value="1"></div>
+        </div>
+        <div class="row">
+          <button id="btnResetBone">重設該骨</button>
+          <button id="btnResetAll">重設全部骨頭</button>
+          <button id="btnResetPose">還原綁定姿勢</button>
+        </div>
+        <div class="row small"><span>說明：先播放 GLB 內建動畫，再把選定骨頭乘上你設定的角度（偏移）。</span></div>
+      </div>
+    </div>
+  </div>
 
-  async function playMotion(file){
-    if(!mixer || !file) return;
-    const clipData = await fetch('./motions/'+file, {cache:'no-store'}).then(r=>r.json());
-    const clip = THREE.AnimationClip.parse(clipData);
-    mixer.stopAllAction();
-    const action = mixer.clipAction(clip);
-    action.reset().setLoop(THREE.LoopRepeat, Infinity).play();
-  }
+  <div id="toast"></div>
 
-  document.getElementById('motion').addEventListener('change', (e)=>playMotion(e.target.value));
-  document.getElementById('reload').addEventListener('click', async ()=>{
-    const items = await loadMotionList();
-    if(items[0]) playMotion(items[0].file);
-  });
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-  function animate(){
-    requestAnimationFrame(animate);
-    resize();
-    const dt = clock.getDelta();
-    if (mixer) mixer.update(dt);
-    renderer.render(scene, camera);
-  }
-  animate();
+    let scene, camera, renderer, controls, clock;
+    let mixer = null, activeAction = null;
+    let root = null, skinned = null, skeleton = null, actions = [];
+    let bindPose = null;
 
-  // 初次載入清單並自動播放第一個
-  loadMotionList().then(items => { if(items[0]) playMotion(items[0].file); });
+    // 偏移參數與「基準四元數」（避免暫停時累積）
+    const offsets = new Map();     // boneName -> {ex,ey,ez,w}
+    const baseQuat = new Map();    // boneName -> Quaternion（動畫基準）
+
+    const view = document.getElementById('view');
+    const fileInput = document.getElementById('file');
+    const btnResetCam = document.getElementById('btnResetCam');
+    const btnClear = document.getElementById('btnClear');
+    const info = document.getElementById('info');
+    const drop = document.getElementById('drop');
+    const toast = document.getElementById('toast');
+    const toggleUIBtn = document.getElementById('toggleUI');
+
+    const clipSel = document.getElementById('clip');
+    const btnPlay = document.getElementById('btnPlay');
+    const speed = document.getElementById('speed');
+    const loopSel = document.getElementById('loop');
+
+    const boneSel = document.getElementById('bone');
+    const pitch = document.getElementById('pitch');
+    const yaw = document.getElementById('yaw');
+    const roll = document.getElementById('roll');
+    const weight = document.getElementById('weight');
+    const btnResetBone = document.getElementById('btnResetBone');
+    const btnResetAll = document.getElementById('btnResetAll');
+    const btnResetPose = document.getElementById('btnResetPose');
+
+    init();
+    animate();
+
+    function init(){
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0b0e13);
+      clock = new THREE.Clock();
+
+      camera = new THREE.PerspectiveCamera(50, view.clientWidth / innerHeight, 0.1, 200);
+      camera.position.set(0, 1.6, 4);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(devicePixelRatio);
+      renderer.setSize(view.clientWidth, innerHeight);
+      view.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 1.2, 0);
+      controls.enableDamping = true;
+
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 0.85));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(3,5,2);
+      scene.add(dir);
+      const grid = new THREE.GridHelper(12, 24, 0x334, 0x223); grid.position.y = 0; scene.add(grid);
+
+      addEventListener('resize', onResize);
+
+      fileInput.addEventListener('change', e => {
+        const f = e.target.files?.[0]; if (f) loadGLBFile(f);
+      });
+      ['dragenter','dragover'].forEach(ev => document.addEventListener(ev, e=>{ e.preventDefault(); drop.style.display='flex'; }));
+      ['dragleave','drop'].forEach(ev => document.addEventListener(ev, e=>{ e.preventDefault(); drop.style.display='none'; }));
+      document.addEventListener('drop', e => {
+        const f = e.dataTransfer.files?.[0];
+        if (f && /\.glb$/i.test(f.name)) loadGLBFile(f);
+      });
+
+      btnPlay.addEventListener('click', ()=>{ if(activeAction){ activeAction.paused = !activeAction.paused; } });
+      speed.addEventListener('input', ()=>{ if(mixer) mixer.timeScale = Number(speed.value); });
+      loopSel.addEventListener('change', ()=> setLoop(loopSel.value));
+
+      btnResetCam.addEventListener('click', resetCamera);
+      btnClear.addEventListener('click', clearScene);
+
+      boneSel.addEventListener('change', syncUIFromBone);
+      for(const el of [pitch,yaw,roll,weight]) el.addEventListener('input', applyUIToBone);
+      btnResetBone.addEventListener('click', ()=>{ const o = offsets.get(boneSel.value); if(o){ o.ex=o.ey=o.ez=0; o.w=1; } syncUIFromBone(); });
+      btnResetAll.addEventListener('click', ()=>{ offsets.forEach(o=>{ o.ex=o.ey=o.ez=0; o.w=1; }); syncUIFromBone(); });
+      btnResetPose.addEventListener('click', restoreBindPose);
+
+      toggleUIBtn.addEventListener('click', ()=>{
+        const hidden = document.body.classList.toggle('ui-hidden');
+        toggleUIBtn.textContent = hidden ? '顯示選單' : '隱藏選單';
+        if (!hidden) document.getElementById('ui').scrollTop = 0; // 展開時把面板捲到最上
+      });
+
+      info.textContent = '請載入 .glb（需包含骨架；可有動畫）';
+    }
+
+    function onResize(){
+      camera.aspect = view.clientWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(view.clientWidth, innerHeight);
+    }
+
+    function resetCamera(){
+      controls.target.set(0,1.2,0);
+      camera.position.set(0,1.6,4);
+      controls.update();
+    }
+
+    function clearScene(){
+      if(root){
+        root.traverse(o => {
+          if (o.geometry) o.geometry.dispose();
+          if (o.material){
+            if (Array.isArray(o.material)) o.material.forEach(m=>m.dispose());
+            else o.material.dispose();
+          }
+        });
+        scene.remove(root);
+        root=null; skinned=null; skeleton=null;
+      }
+      if(mixer){ mixer.stopAllAction(); mixer = null; }
+      activeAction = null; actions = [];
+      clipSel.innerHTML = '';
+      boneSel.innerHTML = '';
+      offsets.clear();
+      baseQuat.clear();
+      bindPose = null;
+      info.textContent = '已清空場景';
+    }
+
+    async function loadGLBFile(file){
+      try{
+        clearScene();
+        info.textContent = '載入中… ' + file.name;
+        const url = URL.createObjectURL(file);
+        const loader = new GLTFLoader();
+        loader.load(url, (gltf)=>{
+          URL.revokeObjectURL(url);
+          useGLTF(gltf.scene, gltf.animations || []);
+          info.textContent = '✅ 已載入：' + file.name;
+        }, undefined, (err)=>{
+          showToast('載入失敗：' + (err?.message||err));
+          info.textContent = '❌ 失敗';
+        });
+      }catch(e){
+        showToast('載入時出錯：' + (e?.message||e));
+      }
+    }
+
+    function useGLTF(sceneObj, clips){
+      root = sceneObj;
+      scene.add(root);
+      root.traverse(o=>{ if(o.isSkinnedMesh && !skinned) skinned = o; });
+      if (!skinned) { showToast('⚠️ 未找到 SkinnedMesh（此 GLB 可能沒有骨架/權重）'); }
+      else {
+        skeleton = skinned.skeleton;
+        buildBoneList(skeleton);
+        captureBindPose();
+      }
+
+      actions = [];
+      if (clips && clips.length){
+        mixer = new THREE.AnimationMixer(root);
+        clips.forEach((clip,i)=>{
+          const act = mixer.clipAction(clip, root);
+          actions.push({ name: clip.name || ('片段'+i), action: act });
+        });
+        clipSel.innerHTML='';
+        actions.forEach((a,i)=>{
+          const opt = document.createElement('option'); opt.value=i; opt.textContent=a.name; clipSel.appendChild(opt);
+        });
+        clipSel.onchange = ()=> chooseClip(Number(clipSel.value));
+        chooseClip(0);
+        setLoop(loopSel.value);
+        mixer.timeScale = Number(speed.value);
+      }else{
+        clipSel.innerHTML='';
+        const opt = document.createElement('option'); opt.textContent='（未偵測到動畫）'; opt.disabled=true; opt.selected=true;
+        clipSel.appendChild(opt);
+      }
+
+      snapshotBase(); // 初次快照一次
+      resetCamera();
+    }
+
+    function chooseClip(idx){
+      if (!mixer || !actions.length) return;
+      if (activeAction) activeAction.stop();
+      activeAction = actions[idx].action;
+      activeAction.reset().play();
+      snapshotBase(); // 切換片段時也重設基準
+    }
+
+    function setLoop(mode){
+      if (!activeAction) return;
+      if (mode==='once'){ activeAction.setLoop(THREE.LoopOnce,0); activeAction.clampWhenFinished=true; }
+      else if (mode==='pingpong'){ activeAction.setLoop(THREE.LoopPingPong,Infinity); activeAction.clampWhenFinished=false; }
+      else { activeAction.setLoop(THREE.LoopRepeat,Infinity); activeAction.clampWhenFinished=false; }
+    }
+
+    function captureBindPose(){
+      if(!skeleton) return;
+      bindPose = skeleton.bones.map(b=>({ b, p:b.position.clone(), q:b.quaternion.clone(), s:b.scale.clone() }));
+    }
+    function restoreBindPose(){
+      if(!bindPose) return;
+      for(const t of bindPose){
+        t.b.position.copy(t.p);
+        t.b.quaternion.copy(t.q);
+        t.b.scale.copy(t.s);
+        t.b.updateMatrix(); t.b.updateMatrixWorld(true);
+      }
+      snapshotBase(); // 綁定姿勢後重設基準
+    }
+
+    // 以「動畫基準」為底的快照（避免暫停累積）
+    function snapshotBase(){
+      if (!skeleton) return;
+      for (const b of skeleton.bones){
+        baseQuat.set(b.name, b.quaternion.clone());
+      }
+    }
+
+    // ---- 中文標籤與排序（含手指）----
+    function norm(n){ return n.toLowerCase().replace(/^armature\|/,'').replace(/^mixamorig:/,'').replace(/[^a-z0-9]/g,''); }
+    function zhLabel(name){
+      const n = norm(name);
+      const side = n.includes('left') ? '左' : (n.includes('right') ? '右' : '');
+      const seg = (n.match(/(thumb|index|middle|ring|pinky)\D*(\d)/)?.[2]) || '';
+      if (n.includes('thumb'))  return side+'拇指'+seg;
+      if (n.includes('index'))  return side+'食指'+seg;
+      if (n.includes('middle')) return side+'中指'+seg;
+      if (n.includes('ring'))   return side+'無名指'+seg;
+      if (n.includes('pinky'))  return side+'小指'+seg;
+      const dict = [
+        ['head','頭部'], ['neck','頸部'],
+        ['chest','胸腔'], ['spine2','胸椎上'], ['spine1','胸椎下'], ['spine','腰椎'],
+        ['hips','骨盆'], ['pelvis','骨盆'],
+        ['shoulder','鎖骨'],
+        ['upperarm','上臂'], ['arm','上臂'],
+        ['forearm','前臂'],
+        ['hand','手'],
+        ['upleg','大腿'], ['thigh','大腿'],
+        ['leg','小腿'], ['calf','小腿'],
+        ['foot','腳'],
+        ['toebase','腳趾根'], ['toe','腳趾']
+      ];
+      for (const [k, zh] of dict){
+        if (n.includes(k)){
+          if (/鎖骨|上臂|前臂|手|大腿|小腿|腳|趾/.test(zh)) return side + zh;
+          return zh;
+        }
+      }
+      return name.replace(/^Armature\|/,'').replace(/^mixamorig:/,'');
+    }
+    function headToToeOrder(name){
+      const n = norm(name);
+      const order = [
+        ['head', 0], ['neck', 10],
+        ['chest', 20], ['spine2', 21], ['spine1', 22], ['spine', 23],
+        ['hips', 30], ['pelvis', 31],
+        ['leftshoulder', 40], ['rightshoulder', 41],
+        ['leftupperarm', 50], ['rightupperarm', 51], ['leftarm', 52], ['rightarm', 53],
+        ['leftforearm', 60], ['rightforearm', 61],
+        ['lefthand', 70], ['righthand', 71],
+        ['leftthumb', 72], ['rightthumb', 73],
+        ['leftindex', 74], ['rightindex', 75],
+        ['leftmiddle', 76], ['rightmiddle', 77],
+        ['leftring', 78], ['rightring', 79],
+        ['leftpinky', 80], ['rightpinky', 81],
+        ['leftupleg', 90], ['rightupleg', 91], ['leftthigh',92], ['rightthigh',93],
+        ['leftleg', 100], ['rightleg', 101], ['leftcalf',102], ['rightcalf',103],
+        ['leftfoot', 110], ['rightfoot', 111],
+        ['lefttoebase', 120], ['righttoebase', 121], ['lefttoe',122], ['righttoe',123]
+      ];
+      for (const [k, r] of order){ if (n.includes(k)) return r; }
+      return 500;
+    }
+    function buildBoneList(skel){
+      boneSel.innerHTML='';
+      offsets.clear();
+      baseQuat.clear();
+      const names = skel.bones.map(b=>b.name).sort((a,b)=> headToToeOrder(a)-headToToeOrder(b) || a.localeCompare(b));
+      for(const n of names){
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = zhLabel(n);
+        opt.title = n;
+        boneSel.appendChild(opt);
+        offsets.set(n, {ex:0, ey:0, ez:0, w:1});
+      }
+      boneSel.value = names[0] || '';
+      syncUIFromBone();
+    }
+    function syncUIFromBone(){
+      const o = offsets.get(boneSel.value);
+      if(!o) return;
+      pitch.value = o.ex; yaw.value = o.ey; roll.value = o.ez; weight.value = o.w;
+    }
+    function applyUIToBone(){
+      const o = offsets.get(boneSel.value);
+      if(!o) return;
+      o.ex = Number(pitch.value); o.ey = Number(yaw.value); o.ez = Number(roll.value); o.w = Number(weight.value);
+    }
+
+    // ---- 每幀：先讓動畫更新，然後以「基準 * 偏移」覆寫（暫停不累積）----
+    const tmpQ = new THREE.Quaternion();
+    const offQ = new THREE.Quaternion();
+    const eul  = new THREE.Euler();
+    const d2r  = THREE.MathUtils.degToRad;
+
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+
+      const playing = activeAction && !activeAction.paused;
+      if (mixer) mixer.update(dt);          // 先讓動畫寫進骨頭
+      if (skeleton){
+        if (playing) snapshotBase();        // 只有播放時更新「基準」
+        if (offsets.size){
+          for (const [name, o] of offsets){
+            if (o.w <= 0) continue;
+            const bone = skeleton.bones.find(b => b.name === name);
+            if (!bone) continue;
+
+            const base = baseQuat.get(name) || bone.quaternion; // 沒基準時就用目前值
+            eul.set(d2r(o.ex), d2r(o.ey), d2r(o.ez), 'XYZ');
+            offQ.setFromEuler(eul);
+
+            // 目標 = 基準 * 偏移；從基準插到目標 → 不會累積
+            tmpQ.copy(base).multiply(offQ);
+            bone.quaternion.copy(base).slerp(tmpQ, o.w);
+          }
+        }
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    function showToast(msg){
+      toast.textContent = '⚠️ ' + msg;
+      toast.style.display = 'block';
+      setTimeout(()=> toast.style.display='none', 4000);
+    }
   </script>
 </body>
 </html>
